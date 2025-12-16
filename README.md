@@ -12,20 +12,20 @@ This repository provides a set of Python modules for building discount curves, i
 - Uses cubic interpolation and smoothing splines to construct discount factors and instantaneous forward rates
 - Provides methods to obtain discount factors and forward rates for arbitrary maturities
 
-### 2. `hw_model.py`
+### 2. `hw_calibration.py`
+- Implements the `HullWhiteCalibrator` class to calibrate the Hull-White model parameters (`a` and `sigma`) to market prices of caps or other interest rate instruments
+- Uses nonlinear least-squares optimization (`scipy.optimize.minimize`) to minimize pricing errors
 
+### 3. `hw_model.py`
 - Implements the Hull-White one-factor short rate model
 - `HullWhiteModel`: encapsulates the Hull-White model dynamics and analytic functions
 - `HullWhiteSimulation`: Monte Carlo simulator for short rate paths using exact and Euler schemes under both the risk-neutral and forward measures
 - `HullWhiteCurveBuilder`: computes zero-coupon bond prices, discount factors, forward rates, and long rates implied by Hull-White dynamics
   
-### 3. `hw_pricer.py`
+### 4. `hw_pricer.py`
 - Implements pricing engines for interest rate derivatives
 - `HullWhitePricer`: prices standard interest rate products including zero-coupon bond options (calls and puts), caps, floors, swaps, and swaptions using both analytic formulas and Monte Carlo methods
 
-### 4. `hw_calibration.py`
-- Implements the `HullWhiteCalibrator` class to calibrate the Hull-White model parameters (`a` and `sigma`) to market prices of caps or other interest rate instruments
-- Uses nonlinear least-squares optimization (`scipy.optimize.minimize`) to minimize pricing errors
 ---
 
 ## Features
