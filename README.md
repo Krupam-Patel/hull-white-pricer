@@ -1,8 +1,6 @@
-# hull-white-pricer
-
 # Hull-White Interest Rate Model Library
 
-This repository provides a set of Python modules to build discount curves, implement the Hull-White short rate model, simulate interest rate paths, price interest rate derivatives, and calibrate the model to market data. It is designed for quantitative finance practitioners and researchers interested in interest rate modeling and derivatives valuation.
+This repository provides a set of Python modules for building discount curves, implementing the Hull-White short rate model, simulating interest rate paths, pricing interest rate derivatives, and calibrating the model to market data. It is intended for quantitative finance practitioners and researchers focused on interest rate modeling and derivatives valuation.
 
 ---
 
@@ -10,34 +8,32 @@ This repository provides a set of Python modules to build discount curves, imple
 
 ### 1. `curve_builder.py`
 
-- Implements the `Curve` class to manage market discount curves.
-- Uses cubic interpolation and smoothing splines to construct discount factors and instantaneous forward rates.
-- Provides methods to obtain discount factors and forward rates for arbitrary maturities.
+- Implements the `Curve` class for managing market discount curves
+- Uses cubic interpolation and smoothing splines to construct discount factors and instantaneous forward rates
+- Provides methods to obtain discount factors and forward rates for arbitrary maturities
 
 ### 2. `hw_model.py`
 
-  - Implements the Hull-White one-factor short rate model classes:
-  - `HullWhiteModel`: encapsulates the Hull-White model dynamics and analytic functions.
-  - `HullWhiteSimulation`: Monte Carlo simulator for short rate paths via exact and Euler schemes under both risk-neutral and forward measures.
-  - `HullWhiteCurveBuilder`: computes zero-coupon bond prices, discount factors, forward rates, and long rates based on Hull-White simulations.
+- Implements the Hull-White one-factor short rate model
+- `HullWhiteModel`: encapsulates the Hull-White model dynamics and analytic functions
+- `HullWhiteSimulation`: Monte Carlo simulator for short rate paths using exact and Euler schemes under both the risk-neutral and forward measures
+- `HullWhiteCurveBuilder`: computes zero-coupon bond prices, discount factors, forward rates, and long rates implied by Hull-White dynamics
   
 ### 3. `hw_pricer.py`
-
-  - Implements the price engines for valuing interest rate products
-  - `HullWhitePricer`: prices common interest rate derivatives such as zero-coupon bond options (calls and puts), caps, floors, swaps, swaptions... with both analytic formulas and Monte Carlo methods.
+- Implements pricing engines for interest rate derivatives
+- `HullWhitePricer`: prices standard interest rate products including zero-coupon bond options (calls and puts), caps, floors, swaps, and swaptions using both analytic formulas and Monte Carlo methods
 
 ### 4. `hw_calibration.py`
-
-- Implements the `HullWhiteCalibrator` class to calibrate the Hull-White model parameters (`a` and `sigma`) to market prices of caps or other interest rate instruments.
-- Uses nonlinear least squares optimization (`scipy.optimize.minimize`) to minimize pricing errors.
+- Implements the `HullWhiteCalibrator` class to calibrate the Hull-White model parameters (`a` and `sigma`) to market prices of caps or other interest rate instruments
+- Uses nonlinear least-squares optimization (`scipy.optimize.minimize`) to minimize pricing errors
 ---
 
 ## Features
 
-- Smooth interpolation of market discount curves.
-- Analytical and simulation-based methods for interest rate dynamics.
-- Pricing of a wide variety of vanilla and exotic interest rate derivatives.
-- The entire model operates under the forward measure, enabling efficient computations.
-- Model calibration framework for real market data.
+- Smooth interpolation of market discount curves
+- Analytical and simulation-based methods for interest rate dynamics
+- Pricing of a broad range of interest rate derivatives
+- Model implementation under the forward measure for efficient computations
+- Calibration framework suitable for real market data
 
 ---
