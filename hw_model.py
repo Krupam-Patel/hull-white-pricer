@@ -190,6 +190,10 @@ class hwCurveBuilder:
             spot_rate = self.sim.sim_short_rate_direct_fwd(start_time)
         else:
             spot_rate = self.sim.sim_short_rate_direct(start_time)
+
+        
+        # FIX THIS PART STILL 
+
         
         A_factor = self.model.A(start_time, end_time)
         B_factor = self.model.B(start_time, end_time)
