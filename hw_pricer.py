@@ -1,563 +1,315 @@
+"""Interest Rate Derivatives Pricing"""
+#FULLY DONE
+
 import numpy as np
 from scipy.stats import norm
 from scipy.optimize import brentq
-from hw_model import HullWhiteCurveBuilder
+from hw_model import hwCurveBuilder
+
 
 class hwPricer:
     def __init__(self, curve, n_paths=10**5, n_steps=252, seed=2025, hw_params=None):
         self.curve = curve
-        self.curve_sim = HullWhiteCurveBuilder(curve, params = hw_params, n_paths = n_paths, 
-                                               n_steps = n_steps, seed = seed)
+        self.curve_sim = hwCurveBuilder(curve, params=hw_params, n_paths=n_paths, n_steps=n_steps, seed=seed)
         self.model = self.curve_sim.model
 
+    def set_sim(self, n_paths=None, n_steps=None, seed=None):
+        if n_paths is not None:
+            self.curve_sim.sim.n_paths = int(n_paths)
+        if n_steps is not None:
+            self.curve_sim.sim.n_steps = int(n_steps)
+        if seed is not None:
+            np.random.seed(seed)
 
-    def set_simulation(self, n_paths=None, n_steps=None, seed=None):
-        if n_paths is not None: self.curve_sim.sim.n_paths = int(n_paths)
-        if n_steps is not None: self.curve_sim.sim.n_steps = int(n_steps)
-        if seed is not None: np.random.seed(seed)
-
-
-    def zero_bond_put(self, T, S, K, mc=False):
-        if T == 0:
-            P_0S = self.model.discount_factor(S)
-            return max(K - P_0S, 0)
+    def zero_bond_put(self, option_expiry, bond_maturity, k, mc=False):
+        if option_expiry == 0:
+            bond_price = self.model.discount(bond_maturity)
+            return max(k - bond_price, 0)
 
         if mc:
-            D_T = self.model.discount_factor(T)
-            P_TS = self.curve_sim.zero_coupon_bond(T, S, fwd_measure=True)
-            payoff = np.maximum(K - P_TS, 0)
-            V0 = np.mean(D_T * payoff)
+            df = self.model.discount(option_expiry)
+            bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
+            payoff = np.maximum(k - bond_price_sim, 0)
+            option_value = np.mean(df * payoff)
         else:
             sigma = self.model.parameters['sigma']
             a = self.model.parameters['a']
-            B = self.model.B(T, S)
-            P_S = self.model.discount_factor(S)
-            P_T = self.model.discount_factor(T)
-            sigma_p = sigma * np.sqrt((1 - np.exp(-2 * a * T)) / (2 * a)) * B
-            h = (1 / sigma_p) * np.log(P_S / (K * P_T)) + 0.5 * sigma_p
-            V0 = K * P_T * norm.cdf(-h + sigma_p) - P_S * norm.cdf(-h)
+            bond_sens = self.model.rate_sens(option_expiry, bond_maturity)
+            bond_price_maturity = self.model.discount(bond_maturity)
+            bond_price_expiry = self.model.discount(option_expiry)
+            vol_bond = sigma * np.sqrt((1 - np.exp(-2 * a * option_expiry)) / (2 * a)) * bond_sens
+            h = (1 / vol_bond) * np.log(bond_price_maturity / (k * bond_price_expiry)) + 0.5 * vol_bond
+            option_value = k * bond_price_expiry * norm.cdf(-h + vol_bond) - bond_price_maturity * norm.cdf(-h)
 
-        return V0
+        return option_value
 
-    def zero_bond_call(self, T, S, K, mc=False):
-        """
-        Value a European call option on a zero-coupon bond P(T, S).
-
-        Parameters
-        ----------
-        T : float
-            Option maturity in years.
-        S : float
-            Bond maturity in years (must be S > T).
-        K : float
-            Strike price.
-        mc : bool, optional
-            If True, value by Monte Carlo, using the forward measure; otherwise use closed form.
-
-        Returns
-        -------
-        float
-            Present value of the call option.
-        """
+    def zero_bond_call(self, option_expiry, bond_maturity, k, mc=False):
         if mc:
-            D_T = self.model.discount_factor(T)
-            P_TS = self.curve_sim.zero_coupon_bond(T, S, fwd_measure=True)
-            payoff = np.maximum(P_TS - K, 0)
-            V0 = np.mean(D_T * payoff)
+            df = self.model.discount(option_expiry)
+            bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
+            payoff = np.maximum(bond_price_sim - k, 0)
+            option_value = np.mean(df * payoff)
         else:
             sigma = self.model.parameters['sigma']
             a = self.model.parameters['a']
-            B = self.model.B(T, S)
-            P_S = self.model.discount_factor(S)
-            P_T = self.model.discount_factor(T)
-            sigma_p = sigma * np.sqrt((1 - np.exp(-2 * a * T)) / (2 * a)) * B
-            h = (1 / sigma_p) * np.log(P_S / (K * P_T)) + 0.5 * sigma_p
-            V0 = P_S * norm.cdf(h) - K * P_T * norm.cdf(h - sigma_p)
+            bond_sens = self.model.rate_sens(option_expiry, bond_maturity)
+            bond_price_maturity = self.model.discount(bond_maturity)
+            bond_price_expiry = self.model.discount(option_expiry)
+            vol_bond = sigma * np.sqrt((1 - np.exp(-2 * a * option_expiry)) / (2 * a)) * bond_sens
+            h = (1 / vol_bond) * np.log(bond_price_maturity / (k * bond_price_expiry)) + 0.5 * vol_bond
+            option_value = bond_price_maturity * norm.cdf(h) - k * bond_price_expiry * norm.cdf(h - vol_bond)
 
-        return V0
-    
-    
-    def caplet(self, T1, T2, N, K, method='js'):
-        """
-        Value an interest rate caplet.
+        return option_value
 
-        Parameters
-        ----------
-        T1 : float
-            Fixing time.
-        T2 : float
-            Payment time (must be T2 > T1).
-        N : float
-            Notional amount.
-        K : float
-            Caplet strike rate.
-        method : str, optional
-            If 'mc', value via Monte Carlo (fwd measure); if 'js', use zero bond put, if 'cf', use closed form.
-
-        Returns
-        -------
-        float
-            Present value of the caplet.
-        """
-        Delta = T2 - T1
-        K_bond = 1 + K * Delta
+    def caplet(self, fixing_time, payment_time, notional, k, method='js'):
+        accrual_period = payment_time - fixing_time
+        k_bond = 1 + k * accrual_period
 
         if method == 'mc':
-            F_T1 = self.curve_sim.forward_rate(T1, T1, T2, fwd_measure=True)
-            payoff = Delta * np.maximum(F_T1 - K, 0)
-            P_T2 = self.model.discount_factor(T2)
-            Caplet = P_T2 * np.mean(payoff)
+            forward_rate = self.curve_sim.inst_fwd_rate(fixing_time, fixing_time, payment_time)
+            payoff = accrual_period * np.maximum(forward_rate - k, 0)
+            discount_payment = self.model.discount(payment_time)
+            caplet_value = discount_payment * np.mean(payoff)
 
         elif method == 'js':
-            put_price = self.zero_bond_put(T1, T2, 1 / K_bond)
-            Caplet = K_bond * put_price
+            put_price = self.zero_bond_put(fixing_time, payment_time, 1 / k_bond)
+            caplet_value = k_bond * put_price
 
         elif method == 'cf':
             sigma = self.model.parameters['sigma']
-            a = self.model.parameters['a']
-            B = self.model.B(T1, T2)
-            P_T2 = self.model.discount_factor(T2)
-            P_T1 = self.model.discount_factor(T1)
-            sigma_p = sigma * np.sqrt((1 - np.exp(-2 * a * T1)) / (2 * a)) * B
-            h = (1 / sigma_p) * np.log(P_T2 * K_bond / P_T1) + 0.5 * sigma_p
-            Caplet = (P_T1 * norm.cdf(-h + sigma_p) - K_bond * P_T2 * norm.cdf(-h))
+            mean_reversion = self.model.parameters['a']
+            bond_sensitivity = self.model.rate_sens(fixing_time, payment_time)
+            discount_payment = self.model.discount(payment_time)
+            discount_fixing = self.model.discount(fixing_time)
+            vol_bond = sigma * np.sqrt((1 - np.exp(-2 * mean_reversion * fixing_time)) / (2 * mean_reversion)) * bond_sensitivity
+            h = (1 / vol_bond) * np.log(discount_payment * k_bond / discount_fixing) + 0.5 * vol_bond
+            caplet_value = discount_fixing * norm.cdf(-h + vol_bond) - k_bond * discount_payment * norm.cdf(-h)
 
-        return N * Caplet
-    
+        return notional * caplet_value
 
-    def cap(self, Tau, N, K, mc=False):
-        """
-        Value an interest rate cap using caplets.
-
-        Parameters
-        ----------
-        Tau : list of float
-            Payment times for caplets (first entry is fixing time, not payment).
-        N : float
-            Notional amount.
-        K : float
-            Cap strike rate.
-        mc : bool, optional
-            If True, value via Monte Carlo (fwd measure); otherwise use closed form.
-
-        Returns
-        -------
-        float
-            Present value of the cap.
-        """
-        Cap = 0
+    def cap(self, payment_schedule, notional, k, mc=False):
+        cap_value = 0
         if mc:
-            for i in range(1, len(Tau)):
-                T1 = Tau[i - 1]
-                T2 = Tau[i]
-                F_T1 = self.curve_sim.forward_rate(T1, T1, T2, fwd_measure=True)
-                Delta = T2 - T1
-                payoff = Delta * np.maximum(F_T1 - K, 0)
-                P_T2 = self.model.discount_factor(T2)
-                Cap += P_T2 * np.mean(payoff)
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+
+                forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
+
+                payoff = accrual_period * np.maximum(forward_rate - k, 0)
+                discount_payment = self.model.discount(payment_time)
+                cap_value += discount_payment * np.mean(payoff)
         else:
-            for i in range(1, len(Tau)):
-                t_prev = Tau[i - 1]
-                t_curr = Tau[i]
-                Delta = t_curr - t_prev
-                K_bond = 1 + K * Delta
-                put_price = self.zero_bond_put(t_prev, t_curr, 1 / K_bond)
-                Cap += K_bond * put_price
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+                k_bond = 1 + k * accrual_period
+                put_price = self.zero_bond_put(fixing_time, payment_time, 1 / k_bond)
+                cap_value += k_bond * put_price
 
-        return N * Cap
+        return notional * cap_value
 
-    def floor(self, Tau, N, K, mc=False):
-        """
-        Value an interest rate floor using floorlets.
-
-        Parameters
-        ----------
-        Tau : list of float
-            Payment times for floorlets (first entry is fixing time, not payment).
-        N : float
-            Notional amount.
-        K : float
-            Floor strike rate.
-        mc : bool, optional
-            If True, value via Monte Carlo (fwd measure); otherwise use closed form.
-
-        Returns
-        -------
-        float
-            Present value of the floor.
-        """
-        Floor = 0
+    def floor(self, payment_schedule, notional, k, mc=False):
+        floor_value = 0
         if mc:
-            for i in range(1, len(Tau)):
-                T1 = Tau[i - 1]
-                T2 = Tau[i]
-                F_T1 = self.curve_sim.forward_rate(T1, T1, T2, fwd_measure=True)
-                Delta = T2 - T1
-                payoff = Delta * np.maximum(K - F_T1, 0)
-                P_T2 = self.model.discount_factor(T2)
-                Floor += P_T2*np.mean(payoff)
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+                forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
+                payoff = accrual_period * np.maximum(k - forward_rate, 0)
+                discount_payment = self.model.discount(payment_time)
+                floor_value += discount_payment * np.mean(payoff)
         else:
-            for i in range(1, len(Tau)):
-                t_prev = Tau[i - 1]
-                t_curr = Tau[i]
-                Delta = t_curr - t_prev
-                K_bond = 1 + K * Delta
-                call_price = self.zero_bond_call(t_prev, t_curr, 1 / K_bond)
-                Floor += K_bond * call_price
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+                k_bond = 1 + k * accrual_period
+                call_price = self.zero_bond_call(fixing_time, payment_time, 1 / k_bond)
+                floor_value += k_bond * call_price
 
-        return N * Floor
-    
-    
-    def swap(self, Tau, N, K, payer = True, mc=False):
-        """
-        Value a plain vanilla interest rate swap.
+        return notional * floor_value
 
-        Parameters
-        ----------
-        Tau : list of float
-            Payment times for the fixed leg (first entry is start time).
-        N : float
-            Notional amount.
-        K : float
-            Fixed rate.
-        payer : bool
-            If True, value a payer swap; otherwise a receiver swap.
-        mc : bool, optional
-            If True, value via Monte Carlo (fwd measure); otherwise use closed form.
+    def swap(self, payment_schedule, notional, fixed_rate, payer=True, mc=False):
+        direction = 1 if payer else -1
+        annuity = 0
+        for i in range(1, len(payment_schedule)):
+            accrual_period = payment_schedule[i] - payment_schedule[i - 1]
+            discount_payment = self.model.discount(payment_schedule[i])
+            annuity += accrual_period * discount_payment
 
-        Returns
-        -------
-        float
-            Present value of the swap.
-        """
-
-        w = 1 if payer else -1
-        Annuity = 0
-        for i in range(1, len(Tau)):
-            Delta = Tau[i] - Tau[i-1]
-            P_T = self.model.discount_factor(Tau[i])
-            Annuity += Delta * P_T
-
-        Fixed_leg = Annuity * K
-        Floating_leg = 0
+        fixed_leg_pv = annuity * fixed_rate
+        floating_leg_pv = 0
 
         if mc:
-            for i in range(1, len(Tau)):
-                T1 = Tau[i - 1]
-                T2 = Tau[i]
-                Delta = T2 - T1
-                P_T2 = self.model.discount_factor(T2)               
-                F_T1 = self.curve_sim.forward_rate(T1, T1, T2, fwd_measure=True)
-                Floating_leg += P_T2 * Delta * np.mean(F_T1)
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+                discount_payment = self.model.discount(payment_time)
+                forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
+                floating_leg_pv += discount_payment * accrual_period * np.mean(forward_rate)
         else:
-            Floating_leg = self.model.discount_factor(Tau[0]) - self.model.discount_factor(Tau[-1])
+            floating_leg_pv = self.model.discount(payment_schedule[0]) - self.model.discount(payment_schedule[-1])
 
-        Swap = N * w * (Floating_leg - Fixed_leg) 
-        return Swap
-    
+        swap_value = notional * direction * (floating_leg_pv - fixed_leg_pv)
+        return swap_value
 
-    def swaption(self, Tau, N, K, payer = True, mc=False):
-        """
-        Value a European payer swaption.
-
-        Parameters
-        ----------
-        Tau : list of float
-            Payment times for the fixed leg (first entry is start time).
-        N : float
-            Notional amount.
-        K : float
-            Fixed rate.
-        payer : bool
-            If True, value a payer swaption; otherwise a receiver swaption.
-        mc : bool, optional
-            If True, value via Monte Carlo (fwd measure); otherwise use closed form.
-
-        Returns
-        -------
-        float
-            Present value of the swaption.
-        """
-
-        w = 1 if payer else -1
-        T = Tau[0]  # Expiry
-        S = Tau[-1] # Maturity
+    def swaption(self, payment_schedule, notional, fixed_rate, payer=True, mc=False):
+        direction = 1 if payer else -1
+        option_expiry = payment_schedule[0]
+        swap_maturity = payment_schedule[-1]
 
         if mc:
-            P_N = self.curve_sim.zero_coupon_bond(T, S, fwd_measure=True)
-            P_T = self.model.discount_factor(T)
-            floating_leg = 1 - P_N
-            fixed_leg = 0
-            for i in range(1, len(Tau)):
-                T1 = Tau[i - 1]
-                T2 = Tau[i]
-                Delta = T2 - T1
-                P_i = self.curve_sim.zero_coupon_bond(T, T2, fwd_measure=True)
-                fixed_leg += Delta * K * P_i 
-            
-            swaption = P_T * N * np.mean(np.maximum(w * (floating_leg - fixed_leg), 0))
+            short_rate_expiry = self.curve_sim.sim.sim_short_rate_direct_fwd(option_expiry)
+
+            bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
+            bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
+            bond_price_final = bond_adj_final * np.exp(-bond_sens_final * short_rate_expiry)
+
+            floating_leg_value = 1.0 - bond_price_final
+            fixed_leg_value = 0.0
+
+            for i in range(1, len(payment_schedule)):
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - payment_schedule[i - 1]
+
+                bond_adj_i = self.model.bond_adj_factor(option_expiry, payment_time)
+                bond_sens_i = self.model.rate_sens(option_expiry, payment_time)
+                bond_price_i = bond_adj_i * np.exp(-bond_sens_i * short_rate_expiry)
+
+                fixed_leg_value += accrual_period * fixed_rate * bond_price_i
+
+            disc_expiry = self.model.discount(option_expiry)
+            swaption_value = disc_expiry * notional * np.mean(np.maximum(direction * (floating_leg_value - fixed_leg_value), 0))
 
         else:
-            r_star = self._find_rstar(T, Tau, K)
-            fixed_leg = 0
-            for i in range(1, len(Tau)):
-                T1 = Tau[i - 1]
-                T2 = Tau[i]
-                Delta = T2 - T1
-                B = self.model.B(T, T2)
-                A = self.model.A(T, T2)
-                K_i = A * np.exp(-B * r_star)
-                option = self.zero_bond_put(T, T2, K_i) if payer else self.zero_bond_call(T, T2, K_i)   
-                fixed_leg += Delta * K * option
-            
-            # Floating leg: option on zero-coupon bond maturing at S
-            B_N = self.model.B(T, S)
-            A_N = self.model.A(T, S)
-            K_N = A_N * np.exp(-B_N * r_star)
-            floating_leg = self.zero_bond_put(T, S, K_N) if payer else self.zero_bond_call(T, S, K_N)
-            
-            swaption = N * (floating_leg + fixed_leg)
+            critical_rate = self.find_rstar(option_expiry, payment_schedule, fixed_rate)
+            fixed_leg_value = 0
+            for i in range(1, len(payment_schedule)):
+                fixing_time = payment_schedule[i - 1]
+                payment_time = payment_schedule[i]
+                accrual_period = payment_time - fixing_time
+                bond_sens = self.model.rate_sens(option_expiry, payment_time)
+                bond_adj = self.model.bond_adj_factor(option_expiry, payment_time)
+                strike_bond = bond_adj * np.exp(-bond_sens * critical_rate)
+                option = self.zero_bond_put(option_expiry, payment_time, strike_bond) if payer else self.zero_bond_call(option_expiry, payment_time, strike_bond)
+                fixed_leg_value += accrual_period * fixed_rate * option
 
-        return swaption
-    
+            bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
+            bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
+            strike_final = bond_adj_final * np.exp(-bond_sens_final * critical_rate)
+            floating_leg_value = self.zero_bond_put(option_expiry, swap_maturity, strike_final) if payer else self.zero_bond_call(option_expiry, swap_maturity, strike_final)
+            swaption_value = notional * (floating_leg_value + fixed_leg_value)
 
-    def coupon_bond(self, Tau, C, N):
-        """
-        Value a coupon bond.
+        return swaption_value
 
-        Parameters
-        ----------
-        Tau : list of float
-            Payment dates of the bond (T1, T2, ..., TN).
-        C : float
-            Coupon rate (annualized).
-        N : float
-            Notional (scaling factor).
-
-        Returns
-        -------
-        float
-            PV of the coupon bond.
-        """
-
+    def coupon_bond(self, payment_schedule, coupon_rate, notional):
         bond_price = 0
-        Delta = (Tau[-1] - Tau[0])
+        for i in range(len(payment_schedule)):
+            curr_time = payment_schedule[i]
+            previous_time = payment_schedule[i - 1] if i > 0 else 0.0
+            accrual_period = curr_time - previous_time
 
-        for i in range(len(Tau)):
-            P_T = self.curve.discount(Tau[i])
-            cashflow = N * (1 + C * Delta) if i == len(Tau) - 1 else N * C * Delta
-            bond_price += cashflow * P_T
+            disc_payment = self.curve.discount(curr_time)
+            coupon_cashflow = notional * coupon_rate * accrual_period
+
+            if i == len(payment_schedule) - 1:
+                coupon_cashflow += notional
+
+            bond_price += coupon_cashflow * disc_payment
 
         return bond_price
-    
 
-    def floating_rate_note(self, Tau, N):
-        """
-        Value a floating rate note (FRN).
-
-        Parameters
-        ----------
-        Tau : list of float
-            Payment dates of the bond (T1, T2, ..., TN).
-
-        N : float
-            Notional (scaling factor).
-
-        Returns
-        -------
-        float
-            PV of the floating rate note.
-        """
-
-        disc_cf = self.swap(Tau, N, K=0, payer=False, mc=False)
-        disc_notional = N * self.model.discount_factor(Tau[-1])
-        frn_price = disc_cf + disc_notional
-
+    def floating_rate_note(self, payment_schedule, notional):
+        disced_coupons = self.swap(payment_schedule, notional, fixed_rate=0, payer=False, mc=False)
+        disced_notional = notional * self.model.discount(payment_schedule[-1])
+        frn_price = disced_coupons + disced_notional
         return frn_price
 
-
-    def bond_option(self, T, Tau, C, K, N, call=True, mc=False):
-        """
-        European option on a coupon bond using simulation or analytical Jamshidian decomposition.
-
-        Parameters
-        ----------
-        T : float
-            Option expiry.
-        Tau : list of float
-            Payment dates of the bond (T1, T2, ..., TN).
-        C : float
-            Coupon rate (annualized). 
-        K : float
-            Strike price of the option (absolute price, not percentage).
-        N : float
-            Notional (scaling factor).
-        call : bool
-            True for a call, False for a put.
-        mc : bool
-            If True, Monte Carlo valuation under forward measure, else closed-form.
-
-        Returns
-        -------
-        float
-            PV of the European option on the coupon bond.
-        """
-
+    def bond_option(self, option_expiry, payment_schedule, coupon_rate, k, notional, call=True, mc=False):
         if mc:
-            CB_t = self.curve_sim.coupon_bearing_bond(T, Tau, C, N)
-            P_T = self.model.discount_factor(T)
-            bond_option = P_T * np.mean((np.maximum(CB_t - K, 0) if call else np.maximum(K - CB_t, 0)))
+            bond_price_dist = self.curve_sim.coupon_bond(option_expiry, payment_schedule, coupon_rate, notional)
+            disc_factor = self.model.discount(option_expiry)
+            option_value = disc_factor * np.mean(
+                np.maximum(bond_price_dist - k, 0) if call else np.maximum(k - bond_price_dist, 0)
+            )
 
         else:
-            # Find critical short rate r* using Jamshidian decomposition for bond options
-            r_star = self._find_rstar_bond(T, Tau, C, N, K)
-            bond_option = 0
-            Delta = (Tau[-1] - Tau[0]) 
+            critical_rate = self.find_rstar_bond(option_expiry, payment_schedule, coupon_rate, notional, k)
+            option_value = 0
 
-            # Decompose into portfolio of zero-coupon bond options
-            for i in range(len(Tau)):
-                B = self.model.B(T, Tau[i])
-                A = self.model.A(T, Tau[i])
-                K_i = A * np.exp(-B * r_star)  # Strike for each zero-coupon bond
-                
-                # Value option on each zero-coupon bond
-                option = self.zero_bond_call(T, Tau[i], K_i) if call else self.zero_bond_put(T, Tau[i], K_i)
-                
-                # Apply correct cashflow: C is annualized rate, multiply by Delta
-                cashflow = N * (1 + C * Delta) if i == len(Tau) - 1 else N * C * Delta
-                bond_option += cashflow * option
+            for i in range(len(payment_schedule)):
+                curr_time = payment_schedule[i]
+                prev_time = payment_schedule[i - 1] if i > 0 else 0.0
+                accrual_period = curr_time - prev_time
 
-        return bond_option
+                bond_sens = self.model.rate_sens(option_expiry, curr_time)
+                bond_adj = self.model.bond_adj_factor(option_expiry, curr_time)
+                k_bond = bond_adj * np.exp(-bond_sens * critical_rate)
 
+                option = self.zero_bond_call(option_expiry, curr_time, k_bond) if call else self.zero_bond_put(option_expiry, curr_time, k_bond)
 
-    # --- Helper methods for Jamshidian decomposition --- #
+                coupon_cashflow = notional * coupon_rate * accrual_period
+                if i == len(payment_schedule) - 1:
+                    coupon_cashflow += notional
 
-    def _jamshidian_root(self, T, Tau, K, r_star):
-        """
-        Jamshidian root-finding function for swaption pricing.
+                option_value += coupon_cashflow * option
 
-        Parameters
-        ----------
-        T : float
-            Option expiry time.
-        Tau : list of float
-            Payment times for the swap.
-        K : float
-            Fixed rate.
-        r_star : float
-            Short rate candidate.
+        return option_value
 
-        Returns
-        -------
-        float
-            Root equation value.
-        """
+    def jams_root(self, option_expiry, payment_schedule, fixed_rate, critical_rate):
         root = 0
-        for i in range(1, len(Tau)):
-            T1 = Tau[i - 1]
-            T2 = Tau[i]
-            Delta = T2 - T1
-            B = self.model.B(T, T2)
-            A = self.model.A(T, T2)
-            P_i = A * np.exp(-B * r_star)
-            root += Delta * K * P_i
+        bond_price_final = 0
+        for i in range(1, len(payment_schedule)):
+            fixing_time = payment_schedule[i - 1]
+            payment_time = payment_schedule[i]
+            accrual_period = payment_time - fixing_time
+            bond_sens = self.model.rate_sens(option_expiry, payment_time)
+            bond_adj = self.model.bond_adj_factor(option_expiry, payment_time)
+            bond_price_i = bond_adj * np.exp(-bond_sens * critical_rate)
+            root += accrual_period * fixed_rate * bond_price_i
+            if i == len(payment_schedule) - 1:
+                bond_price_final = bond_price_i
 
-        root = root - (1 - P_i)
+        root = root - (1 - bond_price_final)
         return root
 
+    def find_rstar(self, option_expiry, payment_schedule, fixed_rate, lower_bound=-5.0, upper_bound=5.0):
+        root_func = lambda rate: self.jams_root(option_expiry, payment_schedule, fixed_rate, rate)
+        try:
+            critical_rate = brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
+        except ValueError:
+            critical_rate = brentq(root_func, -10.0, 10.0, xtol=1e-12)
+        return critical_rate
 
-    def _find_rstar(self, T, Tau, K, x_min=-3, x_max=3):
-        """
-        Find critical short rate r* using Brent's method.
-
-        Parameters
-        ----------
-        T : float
-            Option expiry time.
-        Tau : list of float
-            Payment times for the swap.
-        K : float
-            Fixed rate.
-        x_min : float, optional
-            Lower bound for root search.
-        x_max : float, optional
-            Upper bound for root search.
-
-        Returns
-        -------
-        float
-            Critical short rate r*.
-        """
-        f = lambda r: self._jamshidian_root(T, Tau, K, r)
-        r_star = brentq(f, x_min, x_max, xtol=1e-12)
-        return r_star
-
-
-    def _jamshidian_root_bond(self, T, Tau, C, N, K_strike, r_star):
-        """
-        Jamshidian root-finding function for bond option pricing.
-        Solves: sum(cashflow_i * P(T, T_i; r*)) = K_strike
-
-        Parameters
-        ----------
-        T : float
-            Option expiry time.
-        Tau : list of float
-            Coupon payment dates.
-        C : float
-            Coupon rate (annualized).
-        N : float
-            Notional amount.
-        K_strike : float
-            Strike price of the bond option.
-        r_star : float
-            Short rate candidate.
-
-        Returns
-        -------
-        float
-            Root equation value (bond price - strike).
-        """
+    def jams_root_bond(self, option_expiry, payment_schedule, coupon_rate, notional, k_price, critical_rate):
         bond_price = 0
-        Delta = (Tau[-1] - Tau[0])
-        
-        for i in range(len(Tau)):
-            B = self.model.B(T, Tau[i])
-            A = self.model.A(T, Tau[i])
-            P_i = A * np.exp(-B * r_star)
-            cashflow = N * (1 + C * Delta) if i == len(Tau) - 1 else N * C * Delta
-            bond_price += cashflow * P_i
-        
-        return bond_price - K_strike
 
+        for i in range(len(payment_schedule)):
+            current_time = payment_schedule[i]
+            previous_time = payment_schedule[i - 1] if i > 0 else 0.0
+            accrual_period = current_time - previous_time
 
-    def _find_rstar_bond(self, T, Tau, C, N, K_strike, x_min=-3, x_max=3):
-        """
-        Find critical short rate r* for bond option using Brent's method.
+            bond_sens = self.model.rate_sens(option_expiry, current_time)
+            bond_adj = self.model.bond_adj_factor(option_expiry, current_time)
+            bond_price_i = bond_adj * np.exp(-bond_sens * critical_rate)
 
-        Parameters
-        ----------
-        T : float
-            Option expiry time.
-        Tau : list of float
-            Coupon payment dates.
-        C : float
-            Coupon rate (annualized).
-        N : float
-            Notional amount.
-        K_strike : float
-            Strike price of the bond option.
-        x_min : float, optional
-            Lower bound for root search.
-        x_max : float, optional
-            Upper bound for root search.
+            coupon_cashflow = notional * coupon_rate * accrual_period
+            if i == len(payment_schedule) - 1:
+                coupon_cashflow += notional
 
-        Returns
-        -------
-        float
-            Critical short rate r*.
-        """
-        f = lambda r: self._jamshidian_root_bond(T, Tau, C, N, K_strike, r)
-        r_star = brentq(f, x_min, x_max, xtol=1e-12)
-        return r_star
+            bond_price += coupon_cashflow * bond_price_i
 
+        return bond_price - k_price
+
+    def find_rstar_bond(self, option_expiry, payment_schedule, coupon_rate, notional, k_price, lower_bound=-5.0, upper_bound=5.0):
+        root_func = lambda rate: self.jams_root_bond(option_expiry, payment_schedule, coupon_rate, notional, k_price, rate)
+        try:
+            critical_rate = brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
+        except ValueError:
+            critical_rate = brentq(root_func, -10.0, 10.0, xtol=1e-12)
+        return critical_rate
