@@ -1,122 +1,169 @@
-"""Calibrate Hull White model sigma with fixed a."""
-"""
-DONE
-"""
+"""Calibrate Hull White model sigma with fixed a"""
+
+#Fully Done
+
 from scipy.optimize import minimize, brentq
 from scipy.stats import norm
 import numpy as np
+import pandas as pd
 
 
 class hwCalibrator:
-    def __init__(self, pricer, market_prices, calibrate_to="Caplets", a_fixed=0.01):
+    def __init__(self, pricer, mar_data_df, weight_scheme='Relative', mean_rever=False):
         self.pricer = pricer
         self.model = pricer.model
+        self.mar_data_df = mar_data_df
+        self.weight_scheme = weight_scheme
+        self.mean_rever = mean_rever
+        self.cali_hist = []
 
-        self.market_prices = market_prices
-        self.calibrate_to = calibrate_to    
+    def rate_to_decimal(self, rate_input):
+        return rate_input / 100.0 if rate_input and rate_input > 0.5 else rate_input
 
-        self.a_fixed = float(a_fixed)
-        self.history = []
-        self.model.parameters["a"] = self.a_fixed
+    def objective_error(self, params_vector):
+        if self.mean_rever:
+            mean_rever_param = params_vector[0]
+            vol_param = params_vector[1]
+            self.model.parameters['a'] = mean_rever_param
+            self.model.parameters['sigma'] = vol_param
+        else:
+            vol_param = params_vector[0]
+            self.model.parameters['sigma'] = vol_param
 
-    def maybe_rate(self, x):
-        return x / 100.0 if x and x > 0.5 else x
+        squared_errors_sum = 0.0
+        num_instruments = len(self.mar_data_df)
 
-    def objective(self, sigma_vec):
-        sigma = float(sigma_vec[0])
-        self.model.parameters["sigma"] = sigma
+        for instrument_idx in range(num_instruments):
+            instrument_row = self.mar_data_df.iloc[instrument_idx]
+            market_price_obs = float(instrument_row['Price'])
+            strike_rate = self.rate_to_decimal(instrument_row['Strike'])
+            notional_amount = float(instrument_row['Notional'])
 
-        prices = self.market_prices["Prices"]
-        sq_err = 0.0
-
-        for i in range(len(prices)):
-            mkt_price = float(prices[i])
-            K = self.maybe_rate(self.market_prices["Strike"][i])
-            N = float(self.market_prices["Notional"][i])
-
-            if self.calibrate_to == "Caplets":
-                T = float(self.market_prices["Expiry"][i])
-                S = float(self.market_prices["Maturity"][i])
-                model_price = float(self.pricer.caplet(T, S, N, K))
-            elif self.calibrate_to == "Swaptions":
-                D = self.market_prices["Dates"][i]
-                model_price = float(self.pricer.swaption(D, N, K))
+            if instrument_row['InstrumentType'] == 'Caplet':
+                option_expiry_time = float(instrument_row['Expiry'])
+                rate_maturity_time = float(instrument_row['Maturity'])
+                model_price_calc = float(self.pricer.caplet(
+                    T1=option_expiry_time,
+                    T2=rate_maturity_time,
+                    N=notional_amount,
+                    K=strike_rate,
+                    method='cf'
+                ))
+            elif instrument_row['InstrumentType'] == 'Swap':
+                swap_dates = instrument_row['Dates']
+                payer_flag = instrument_row.get('PayerFlag', True)
+                model_price_calc = float(self.pricer.swap(
+                    Tau=swap_dates,
+                    N=notional_amount,
+                    K=strike_rate,
+                    payer=payer_flag,   
+                    mc=False
+                ))
             else:
-                raise ValueError("calibrate_to must be Caplets or Swaptions")
+                raise ValueError(f"Unknown instrument type: {instrument_row['InstrumentType']}")
 
-            diff = model_price - mkt_price
-            sq_err += diff * diff
+            price_delta = model_price_calc - market_price_obs
 
-        rmse = np.sqrt(sq_err / max(len(prices), 1))
-        self.history.append((sigma, rmse))
-        return rmse
+            if self.weight_scheme == 'Relative':
+                weight_factor = 1.0 / (abs(market_price_obs) + 1e-8)
+            elif self.weight_scheme == 'Vega' and 'Vega' in instrument_row:
+                weight_factor = 1.0 / (instrument_row['Vega'] + 1e-8)
+            else:
+                weight_factor = 1.0
 
-    def callback(self, sigma_vec):
-        sigma = float(sigma_vec[0])
-        if self.history:
-            _, last_rmse = self.history[-1]
-            print(self.a_fixed, sigma, last_rmse)
+            squared_errors_sum += (price_delta * weight_factor) ** 2
+
+        rmse_error = np.sqrt(squared_errors_sum / max(num_instruments, 1))
+        self.calibration_history.append((params_vector.copy() if isinstance(params_vector, np.ndarray) 
+                                         else params_vector, rmse_error))
+        
+        return rmse_error
+
 
     def calibrate(self):
-        init_sigma = 0.01
-        bounds = ((1e-5, 0.20),)
-        method = "L-BFGS-B" 
+        curr_mean_reversion = self.model.parameters['a']
+        initial_volatility = 0.01
 
-        x0 = [float(init_sigma)]
+        if self.calibrate_mean_reversion:
+            params_initial = np.array([curr_mean_reversion, initial_volatility])
+            bounds_constraints = [(1e-4, 1.0), (1e-5, 0.2)]
+        else:
+            params_initial = np.array([initial_volatility])
+            bounds_constraints = [(1e-5, 0.2)]
 
-        result = minimize(
-            self.objective,
-            x0,
-            method="L-BFGS-B",
-            bounds=bounds,
+        opt_result = minimize(
+            self.calculate_objective_error,
+            params_initial,
+            method='L-BFGS-B',
+            bounds=bounds_constraints
         )
 
-        if result.success:
-            opt_sigma = float(result.x[0])
-            self.model.parameters["sigma"] = opt_sigma
-            print("\nCalibration Successful")
-            print(f"\nOptimal Sigma: {opt_sigma:.6f}")
-            print(f"\nFinal RMSE: {float(result.fun):.6f}")
+        if opt_result.success:
+            if self.calibrate_mean_reversion:
+                opt_mean_rever = float(opt_result.x[0])
+                opt_volatility = float(opt_result.x[1])
+                self.model.parameters['a'] = opt_mean_rever
+                self.model.parameters['sigma'] = opt_volatility
+                print("\nCalibration Successful")
+                print(f"\nOptimal Mean Reversion (a): {opt_mean_rever:.6f}")
+                print(f"Optimal Volatility (sigma): {opt_volatility:.6f}")
+            else:
+                opt_volatility = float(opt_result.x[0])
+                self.model.parameters['sigma'] = opt_volatility
+                print("\nCalibration Successful")
+                print(f"\nOptimal Volatility (sigma): {opt_volatility:.6f}")
+
+            final_rmse = float(opt_result.fun)
+            print(f"Final RMSE: {final_rmse:.6f}")
         else:
-            print("Calibration Failed:", result.message)
+            print("Calibration Failed:", opt_result.message)
 
-        return result
+        return opt_result
 
 
-def black_normal_vol(price, forward, strike, expiry, notional, annuity):
-    f = forward / 100.0 if forward and forward > 0.5 else forward
-    k = strike  / 100.0 if strike  and strike  > 0.5 else strike
+def invert_bach_normal_vol(mar_price_input, frd_rate, strike_rate, time_to_expiry, 
+                                 annuity_factor, not_size):
+    frd_dec = frd_rate / 100.0 if frd_rate and frd_rate > 0.5 else frd_rate
+    strike_dec = strike_rate / 100.0 if strike_rate and strike_rate > 0.5 else strike_rate
 
-    if expiry <= 0 or annuity <= 0 or notional <= 0:
-        raise ValueError("expiry, annuity, and notional must be positive")
+    if time_to_expiry <= 0 or annuity_factor <= 0 or not_size <= 0:
+        raise ValueError("time_to_expiry, annuity_factor, and not_size must be positive")
 
-    target = float(price)
+    target_price = float(mar_price_input)
 
-    def bach_price(sig):
-        if sig <= 0:
+    def bach_formula_price(normal_vol):
+        if normal_vol <= 0:
             return np.nan
-        root_t = np.sqrt(expiry)
-        d = (f - k) / (sig * root_t)
-        return annuity * notional * ((f - k) * norm.cdf(d) + sig * root_t * norm.pdf(d))
+        sqrt_time = np.sqrt(time_to_expiry)
+        d_param = (frd_dec - strike_dec) / (normal_vol * sqrt_time)
+        bach_price = annuity_factor * not_size * ((frd_dec - strike_dec) * norm.cdf(d_param) 
+                                                   + normal_vol * sqrt_time * norm.pdf(d_param))
 
-    lo = 1e-8
-    hi = 1.0
+        return bach_price
+    
+    lower_vol_bound = 1e-8
+    upper_vol_bound = 1.0
 
     try:
-        px_lo = bach_price(lo) - target
-        px_hi = bach_price(hi) - target
-        if px_lo * px_hi > 0:
+        price_at_lower = bach_formula_price(lower_vol_bound) - target_price
+        price_at_upper = bach_formula_price(upper_vol_bound) - target_price
+        
+        if price_at_lower * price_at_upper > 0:
             for _ in range(6):
-                hi *= 2.0
-                px_hi = bach_price(hi) - target
-                if px_lo * px_hi <= 0:
+                upper_vol_bound *= 2.0
+                price_at_upper = bach_formula_price(upper_vol_bound) - target_price
+                if price_at_lower * price_at_upper <= 0:
                     break
 
-        sigma_normal = brentq(lambda s: bach_price(s) - target, lo, hi)
+        implied_normal_vol = brentq(
+            lambda vol_guess: bach_formula_price(vol_guess) - target_price,
+            lower_vol_bound,
+            upper_vol_bound
+        )
     except ValueError:
         return np.nan
 
-    return sigma_normal * 10000.0
+    return implied_normal_vol * 10000.0
 
 if __name__ == "__main__":
     print("Calibration module works")
