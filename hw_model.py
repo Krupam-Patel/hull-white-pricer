@@ -120,21 +120,15 @@ class hwSim:
             rate_paths[:, time_step] = rate_deviations[:, time_step] + theta_val
 
         return rate_paths, time_grid
-    
-
-
-# FIX THIS ERROR. The grey stuff. Figure out what the problem is here 
-
-
-
 
     def validate_sim(self, future_time):
-        euler_paths, _ = self.sim.simulate_short_rate_euler(future_time)
+        euler_paths, _ = self.sim.sim_short_rate_euler(future_time)
         euler_final = euler_paths[:, -1]
         direct_paths = self.sim.sim_short_rate_direct(future_time)
 
         analytic_mean = (self.model.parameters['r0'] * np.exp(-self.model.parameters['a'] * future_time) 
-                         + self.model.theta(future_time) - np.exp(-self.model.parameters['a'] * future_time) * self.model.theta(0))
+                         + self.model.theta(future_time) - np.exp(-self.model.parameters['a'] 
+                                                                  * future_time) * self.model.theta(0))
         analytic_std = np.sqrt((self.model.parameters['sigma']**2) / (2 * self.model.parameters['a']) 
                               * (1 - np.exp(-2 * self.model.parameters['a'] * future_time)))
 
@@ -145,8 +139,7 @@ class hwSim:
         df = pd.DataFrame(comparison_data, index=["Euler Simulation", "Direct Simulation", "Analytic"])
         return df
 
-
-class HullWhiteCurveBuilder:
+class hwCurveBuilder:
     def __init__(self, curve, params=None, n_paths=10**5, n_steps=100, seed=2025):
         self.curve = curve
         self.model = hwModel(self.curve, params)
@@ -154,47 +147,49 @@ class HullWhiteCurveBuilder:
 
     def short_rate(self, target_maturity, fwd_measure=False):
         if fwd_measure:
-            return self.sim.simulate_short_rate_direct_forward(target_maturity)
+            return self.sim.sim_short_rate_direct_fwd(target_maturity)
         else:
-            return self.sim.simulate_short_rate_direct(target_maturity)
+            return self.sim.sim_short_rate_direct(target_maturity)
 
     def zero_coupon_bond(self, eval_time, maturity, fwd_measure=False):
         if fwd_measure:
-            rate_at_eval = self.sim.simulate_short_rate_direct_forward(eval_time)
+            rate_at_eval = self.sim.sim_short_rate_direct_fwd(eval_time)
         else:
-            rate_at_eval = self.sim.simulate_short_rate_direct(eval_time)
+            rate_at_eval = self.sim.sim_short_rate_direct(eval_time)
         
         A_factor = self.model.A(eval_time, maturity)
         B_factor = self.model.B(eval_time, maturity)
         bond_price = A_factor * np.exp(-B_factor * rate_at_eval)
         return bond_price
 
-    def discount_factor(self, eval_time, maturity):
-        r_paths, time_grid = self.sim.simulate_short_rate_euler(maturity)
-        end_idx = np.searchsorted(time_grid, maturity)
-        start_idx = np.searchsorted(time_grid, eval_time)
+    def disc_factor(self, eval_time, maturity):
+        r_paths, time_grid = self.sim.sim_short_rate_euler(maturity)
+        maturity_index = np.searchsorted(time_grid, maturity)
+        start_idx = np.searchsorted(time_grid, eval_time) = np.searchsorted(time_grid, eval_time)
 
         dt = time_grid[1] - time_grid[0]
-        integral_rates = np.sum(r_paths[:, start_idx:end_idx] * dt, axis=1)
+        integral_rates = np.sum(r_paths[:, start_idx:maturity_index] * dt, axis=1)
         df = np.exp(-integral_rates)
         return df
 
     def inst_fwd_rate(self, start_time, end_time):
-        realized_rate = self.sim.simulate_short_rate_direct(start_time)
+        realized_rate = self.sim.sim_short_rate_direct(start_time)
         market_fwd_end = self.model.inst_fwd_rate(end_time)
         market_fwd_start = self.model.inst_fwd_rate(start_time)
         B_factor = self.model.B(start_time, end_time)
         a = self.model.parameters['a']
         sigma = self.model.parameters['sigma']
         convexity_adj = (sigma**2) * (1 - np.exp(-2 * a * start_time)) / (2 * a)
-        predicted_fwd = market_fwd_end + np.exp(-a * (end_time - start_time)) * (realized_rate - market_fwd_start + convexity_adj * B_factor)
+        predicted_fwd = (market_fwd_end + np.exp(-a * (end_time - start_time))
+            * (realized_rate - market_fwd_start + convexity_adj * B_factor)
+        )
         return predicted_fwd
 
     def long_rate(self, start_time, end_time, fwd_measure=False):
         if fwd_measure:
-            spot_rate = self.sim.simulate_short_rate_direct_forward(start_time)
-        else:   
-            spot_rate = self.sim.simulate_short_rate_direct(start_time)
+            spot_rate = self.sim.sim_short_rate_direct_fwd(start_time)
+        else:
+            spot_rate = self.sim.sim_short_rate_direct(start_time)
         
         A_factor = self.model.A(start_time, end_time)
         B_factor = self.model.B(start_time, end_time)
@@ -206,12 +201,11 @@ class HullWhiteCurveBuilder:
     def fwd_rate(self, eval_time, start_date, end_date, fwd_measure=False):
         bond_at_start = self.zero_coupon_bond(eval_time, start_date, fwd_measure=fwd_measure)
         bond_at_end = self.zero_coupon_bond(eval_time, end_date, fwd_measure=fwd_measure)
-        libor_rate = (1 / (end_date - start_date)) * (bond_at_start / bond_at_end - 1)
+        libor_rate = (1.0 / (end_date - start_date)) * (bond_at_start / bond_at_end - 1.0)
         return libor_rate
 
     def coupon_bond(self, eval_time, coupon_schedule, coupon_rate, principal, fwd_measure=False):
         valid_coupons = [t for t in coupon_schedule if t >= eval_time]
-        
         if not valid_coupons:
             return 0.0
         
@@ -223,7 +217,7 @@ class HullWhiteCurveBuilder:
             df_coupon = self.zero_coupon_bond(eval_time, valid_coupons[i], fwd_measure=fwd_measure)
             bond_value += coupon_amt * np.mean(df_coupon)
         
-        accrual_last = valid_coupons[-1] - valid_coupons[-2] if len(valid_coupons) > 1 else 0
+        accrual_last = valid_coupons[-1] - valid_coupons[-2] if len(valid_coupons) > 1 else 0.0
         final_coupon = coupon_rate * principal * accrual_last
         df_final = self.zero_coupon_bond(eval_time, valid_coupons[-1], fwd_measure=fwd_measure)
         bond_value += (principal + final_coupon) * np.mean(df_final)
@@ -233,3 +227,4 @@ class HullWhiteCurveBuilder:
 
 if __name__ == "__main__":
     print("Hull-White model and simulation modules work")
+
