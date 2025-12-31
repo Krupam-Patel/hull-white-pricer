@@ -1,4 +1,4 @@
-"""Market curve for discount factors and forward rates."""
+"""Market curve for discount factors and forward rates"""
 #Fully done 
 
 import numpy as np
@@ -60,4 +60,4 @@ class hwCurve:
 
 
 if __name__ == "__main__":
-    print("Curve module works.")
+    print("Curve module works")
