@@ -2,6 +2,7 @@
 
 This repository provides a set of Python modules for building discount curves, implementing the Hull-White short rate model, simulating interest rate paths, pricing interest rate derivatives, and calibrating the model to market data. It is intended for quantitative finance practitioners and researchers focused on interest rate modeling and derivatives valuation.
 
+Working on making the jupyter notebook for better ui
 ---
 
 ## Modules
