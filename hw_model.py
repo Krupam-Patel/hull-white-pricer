@@ -8,11 +8,7 @@ from typing import Any
 class hwModel:
     def __init__(self, curve: Any, parameters: dict | None = None) -> None:
         self.curve = curve
-        defaults = {
-            "a": 0.01,
-            "sigma": 0.01,
-            "r0": curve.inst_fwd_rate(0.0)
-        }
+        defaults = {"a": 0.01, "sigma": 0.01, "r0": curve.inst_fwd_rate(0.0)}
 
         if parameters is None:
             parameters = {}
