@@ -7,8 +7,6 @@ from scipy.optimize import brentq
 
 from hw_model import hwModel
 
-#Fix first paragraph here
-
 class hwPricer:
     def __init__(self, curve, n_paths: int = 10**5, n_steps: int = 252, seed: int = 2025, hw_params: dict | None = None):
         self.curve = curve
