@@ -250,4 +250,3 @@ class hwCurveBuilder:
 
 if __name__ == "__main__":
     print("Hull-White model and simulation modules work")
-
