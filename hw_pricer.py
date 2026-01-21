@@ -1,16 +1,18 @@
 """Interest Rate Derivatives Pricing"""
-# Still working on
+# Fully done updated version 1-19-2026
 
 import numpy as np
 from scipy.stats import norm
 from scipy.optimize import brentq
-from hw_model import hwCurveBuilder
 
+from hw_model import hwModel
+
+#Fix first paragraph here
 
 class hwPricer:
     def __init__(self, curve, n_paths: int = 10**5, n_steps: int = 252, seed: int = 2025, hw_params: dict | None = None):
         self.curve = curve
-        self.curve_sim = hwCurveBuilder(curve, params=hw_params, n_paths=n_paths, n_steps=n_steps, seed=seed)
+        self.model = hwModel(curve, parameters=hw_params)
         self.model = self.curve_sim.model
 
     def set_sim(self, n_paths=None, n_steps=None, seed=None):
@@ -59,39 +61,44 @@ class hwPricer:
         return strike * bond_price_expiry * norm.cdf(-h + vol_bond) - bond_price_maturity * norm.cdf(-h)
 
     def zero_bond_put(self, option_expiry: float, bond_maturity: float, strike: float, mc: bool = False) -> float:
-        self._validate_times(option_expiry, bond_maturity)
-        self._validate_positive(strike, "strike")
+        self.validate_times(option_expiry, bond_maturity)
+        self.validate_positive(strike, "strike")
         if option_expiry == 0.0:
             bond_price = self.model.discount(bond_maturity)
             return max(strike - bond_price, 0.0)
         if mc: # This is monte carlo btw
-            return self._price_zero_bond_put_mc(option_expiry, bond_maturity, strike)
-        return self._price_zero_bond_put_analytical(option_expiry, bond_maturity, strike)
-# Working here 
+            return self.price_zero_bond_put_mc(option_expiry, bond_maturity, strike)
+        return self.price_zero_bond_put_analytical(option_expiry, bond_maturity, strike)
+    
     def price_zero_bond_call_mc(self, option_expiry: float, bond_maturity: float, strike: float) -> float:
+        if strike <= 0:
+            raise ValueError(f"strike must be positive, got {strike}")
         df = self.model.discount(option_expiry)
         bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
-        payoff = np.maximum(bond_price_sim - strike, 0)
-        return np.mean(df * payoff)
+        payoff = np.maximum(bond_price_sim - strike, 0.0)
+        return float(np.mean(df * payoff))
 
     def price_zero_bond_call_analytical(self, option_expiry: float, bond_maturity: float, strike: float) -> float:
+        if strike <= 0:
+            raise ValueError(f"strike must be positive, got {strike}")
         sigma = self.model.parameters['sigma']
         a = self.model.parameters['a']
         bond_sens = self.model.rate_sens(option_expiry, bond_maturity)
         bond_price_maturity = self.model.discount(bond_maturity)
         bond_price_expiry = self.model.discount(option_expiry)
-        vol_bond = sigma * np.sqrt((1 - np.exp(-2 * a * option_expiry)) / (2 * a)) * bond_sens
-        h = (1 / vol_bond) * np.log(bond_price_maturity / (strike * bond_price_expiry)) + 0.5 * vol_bond
-        return bond_price_maturity * norm.cdf(h) - strike * bond_price_expiry * norm.cdf(h - vol_bond)
+        vol_bond = sigma * np.sqrt((1.0 - np.exp(-2.0 * a * option_expiry)) / (2.0 * a)) * bond_sens
+        h = (1.0 / vol_bond) * np.log(bond_price_maturity / (strike * bond_price_expiry)) + 0.5 * vol_bond
+
+        return float(bond_price_maturity * norm.cdf(h) - strike * bond_price_expiry * norm.cdf(h - vol_bond))
 
     def zero_bond_call(self, option_expiry: float, bond_maturity: float, strike: float, mc: bool = False) -> float:
         self.validate_times(option_expiry, bond_maturity)
         self.validate_positive(strike, "strike")
         
         if mc:
-            return self._price_zero_bond_call_mc(option_expiry, bond_maturity, strike)
-        else:
-            return self.price_zero_bond_call_analytical(option_expiry, bond_maturity, strike)
+            return self.price_zero_bond_call_mc(option_expiry, bond_maturity, strike)
+        
+        return self.price_zero_bond_call_analytical(option_expiry, bond_maturity, strike)
 
     def caplet(self, fixing_time: float, payment_time: float, notional: float, strike: float, method: str = 'js') -> float:
         self.validate_times(fixing_time, payment_time)
@@ -99,56 +106,57 @@ class hwPricer:
         self.validate_positive(strike, "strike")
         
         accrual_period = payment_time - fixing_time
-        k_bond = 1 + strike * accrual_period
+        k_bond = 1.0 + strike * accrual_period
 
-        if method == 'mc':
+        if method == 'mc': #Monte Carlo 
             forward_rate = self.curve_sim.inst_fwd_rate(fixing_time, fixing_time, payment_time)
-            payoff = accrual_period * np.maximum(forward_rate - strike, 0)
-            discount_payment = self.model.discount(payment_time)
-            caplet_value = discount_payment * np.mean(payoff)
+            payoff = accrual_period * np.maximum(forward_rate - strike, 0.0)
+            disc_payment = self.model.discount(payment_time)
+            caplet_value = disc_payment * np.mean(payoff)
 
-        elif method == 'js':
-            put_price = self.zero_bond_put(fixing_time, payment_time, 1 / k_bond, mc=False)
+        elif method == 'js': #Jamshidian's Split
+            put_price = self.zero_bond_put(fixing_time, payment_time, 1.0 / k_bond, mc=False)
             caplet_value = k_bond * put_price
 
-        elif method == 'cf':
+        elif method == 'cf': #Closed-Form
             sigma = self.model.parameters['sigma']
             mean_reversion = self.model.parameters['a']
-            bond_sensitivity = self.model.rate_sens(fixing_time, payment_time)
-            discount_payment = self.model.discount(payment_time)
-            discount_fixing = self.model.discount(fixing_time)
-            vol_bond = sigma * np.sqrt((1 - np.exp(-2 * mean_reversion * fixing_time)) / (2 * mean_reversion)) * bond_sensitivity
-            h = (1 / vol_bond) * np.log(discount_payment * k_bond / discount_fixing) + 0.5 * vol_bond
-            caplet_value = discount_fixing * norm.cdf(-h + vol_bond) - k_bond * discount_payment * norm.cdf(-h)
+            bond_sens = self.model.rate_sens(fixing_time, payment_time)
+            disc_payment = self.model.discount(payment_time)
+            disc_fixing = self.model.discount(fixing_time)
+            vol_bond = sigma * np.sqrt((1.0 - np.exp(-2.0 * mean_reversion * fixing_time)) / (2.0 * mean_reversion)) * bond_sens
+            h = (1.0 / vol_bond) * np.log(disc_payment * k_bond / disc_fixing) + 0.5 * vol_bond
+            caplet_value = disc_fixing * norm.cdf(-h + vol_bond) - k_bond * disc_payment * norm.cdf(-h)
         else:
             raise ValueError(f"method must be 'mc', 'js', or 'cf', got {method}")
 
         return notional * caplet_value
 
+    def caplet_pv(self, fixing_time: float, payment_time: float, strike: float, mc: bool) -> float:
+        accrual_period = payment_time - fixing_time
+        if mc:
+            forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
+            payoff = accrual_period * np.maximum(forward_rate - strike, 0.0)
+            disc_payment = self.model.discount(payment_time)
+
+            return disc_payment * np.mean(payoff)
+        else:
+            k_bond = 1.0 + strike * accrual_period
+            put_price = self.zero_bond_put(fixing_time, payment_time, 1.0 / k_bond, mc=False)
+            
+            return k_bond * put_price
+
     def cap(self, payment_schedule: np.ndarray, notional: float, strike: float, mc: bool = False) -> float:
         self.validate_positive(notional, "notional")
         self.validate_positive(strike, "strike")
         
-        cap_value = 0.0
-        if mc:
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
-                payoff = accrual_period * np.maximum(forward_rate - strike, 0)
-                discount_payment = self.model.discount(payment_time)
-                cap_value += discount_payment * np.mean(payoff)
-        else:
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                k_bond = 1 + strike * accrual_period
-                put_price = self.zero_bond_put(fixing_time, payment_time, 1 / k_bond, mc=False)
-                cap_value += k_bond * put_price
+        cap_value = sum(
+            self.caplet_pv(payment_schedule[i - 1], payment_schedule[i], strike, mc) 
+            for i in range(1, len(payment_schedule))
+        )
 
         return notional * cap_value
+
 
     def floor(self, payment_schedule: np.ndarray, notional: float, strike: float, mc: bool = False) -> float:
         self.validate_positive(notional, "notional")
@@ -161,19 +169,20 @@ class hwPricer:
                 payment_time = payment_schedule[i]
                 accrual_period = payment_time - fixing_time
                 forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
-                payoff = accrual_period * np.maximum(strike - forward_rate, 0)
-                discount_payment = self.model.discount(payment_time)
-                floor_value += discount_payment * np.mean(payoff)
+                payoff = accrual_period * np.maximum(strike - forward_rate, 0.0)
+                disc_payment = self.model.discount(payment_time)
+                floor_value += disc_payment * np.mean(payoff)
         else:
             for i in range(1, len(payment_schedule)):
                 fixing_time = payment_schedule[i - 1]
                 payment_time = payment_schedule[i]
                 accrual_period = payment_time - fixing_time
-                k_bond = 1 + strike * accrual_period
-                call_price = self.zero_bond_call(fixing_time, payment_time, 1 / k_bond, mc=False)
+                k_bond = 1.0 + strike * accrual_period
+                call_price = self.zero_bond_call(fixing_time, payment_time, 1.0 / k_bond, mc=False)
                 floor_value += k_bond * call_price
 
         return notional * floor_value
+
 
     def swap(self, payment_schedule: np.ndarray, notional: float, fixed_rate: float, payer: bool = True, mc: bool = False) -> float:
         self.validate_positive(notional, "notional")
@@ -183,27 +192,28 @@ class hwPricer:
         annuity = 0.0
         for i in range(1, len(payment_schedule)):
             accrual_period = payment_schedule[i] - payment_schedule[i - 1]
-            discount_payment = self.model.discount(payment_schedule[i])
-            annuity += accrual_period * discount_payment
+            disc_payment = self.model.discount(payment_schedule[i])
+            annuity += accrual_period * disc_payment
 
         fixed_leg_pv = annuity * fixed_rate
         floating_leg_pv = 0.0
+
 
         if mc:
             for i in range(1, len(payment_schedule)):
                 fixing_time = payment_schedule[i - 1]
                 payment_time = payment_schedule[i]
                 accrual_period = payment_time - fixing_time
-                discount_payment = self.model.discount(payment_time)
+                disc_payment = self.model.discount(payment_time)
                 forward_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
-                floating_leg_pv += discount_payment * accrual_period * np.mean(forward_rate)
+                floating_leg_pv += disc_payment * accrual_period * np.mean(forward_rate)
         else:
             floating_leg_pv = self.model.discount(payment_schedule[0]) - self.model.discount(payment_schedule[-1])
-
         swap_value = notional * direction * (floating_leg_pv - fixed_leg_pv)
+
         return swap_value
 
-    def _jams_root(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, critical_rate: float) -> float:
+    def jams_root(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, critical_rate: float) -> float:
         root = 0.0
         bond_price_final = 0.0
         for i in range(1, len(payment_schedule)):
@@ -217,11 +227,12 @@ class hwPricer:
             if i == len(payment_schedule) - 1:
                 bond_price_final = bond_price_i
 
-        root = root - (1 - bond_price_final)
+        root = root - (1.0 - bond_price_final)
+
         return root
 
-    def _find_rstar(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
-        root_func = lambda rate: self._jams_root(option_expiry, payment_schedule, fixed_rate, rate)
+    def find_rstar(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
+        root_func = lambda rate: self.jams_root(option_expiry, payment_schedule, fixed_rate, rate)
         
         f_lower = root_func(lower_bound)
         f_upper = root_func(upper_bound)
@@ -231,7 +242,7 @@ class hwPricer:
             f_lower = root_func(lower_bound)
             f_upper = root_func(upper_bound)
             if f_lower * f_upper > 0:
-                raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check fixed_rate={fixed_rate}.")
+                raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check fixed rate={fixed_rate}.")
         
         return brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
 
@@ -263,7 +274,7 @@ class hwPricer:
             swaption_value = disc_expiry * notional * np.mean(np.maximum(direction * (floating_leg_value - fixed_leg_value), 0))
 
         else:
-            critical_rate = self._find_rstar(option_expiry, payment_schedule, fixed_rate)
+            critical_rate = self.find_rstar(option_expiry, payment_schedule, fixed_rate)
             fixed_leg_value = 0.0
             for i in range(1, len(payment_schedule)):
                 fixing_time = payment_schedule[i - 1]
@@ -308,9 +319,10 @@ class hwPricer:
         disced_coupons = self.swap(payment_schedule, notional, fixed_rate=0.0, payer=False, mc=False)
         disced_notional = notional * self.model.discount(payment_schedule[-1])
         frn_price = disced_coupons + disced_notional
+
         return frn_price
 
-    def _jams_root_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, strike_price: float, critical_rate: float) -> float:
+    def jams_root_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, strike_price: float, critical_rate: float) -> float:
         bond_price = 0.0
         for i in range(len(payment_schedule)):
             current_time = payment_schedule[i]
@@ -326,8 +338,8 @@ class hwPricer:
 
         return bond_price - strike_price
 
-    def _find_rstar_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, strike_price: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
-        root_func = lambda rate: self._jams_root_bond(option_expiry, payment_schedule, coupon_rate, notional, strike_price, rate)
+    def find_rstar_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, strike_price: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
+        root_func = lambda rate: self.jams_root_bond(option_expiry, payment_schedule, coupon_rate, notional, strike_price, rate)
         
         f_lower = root_func(lower_bound)
         f_upper = root_func(upper_bound)
@@ -353,9 +365,8 @@ class hwPricer:
             option_value = disc_factor * np.mean(
                 np.maximum(bond_price_dist - strike, 0) if call else np.maximum(strike - bond_price_dist, 0)
             )
-
         else:
-            critical_rate = self._find_rstar_bond(option_expiry, payment_schedule, coupon_rate, notional, strike)
+            critical_rate = self.find_rstar_bond(option_expiry, payment_schedule, coupon_rate, notional, strike)
             option_value = 0.0
 
             for i in range(len(payment_schedule)):
