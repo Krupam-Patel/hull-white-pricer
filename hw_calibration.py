@@ -1,402 +1,184 @@
-"""Interest Rate Derivatives Pricing"""
-# Fully done 1-21/2026
-
 import logging
-import numpy as np
-from scipy.stats import norm
-from scipy.optimize import brentq
+from typing import Optional, Sequence, Tuple
 
-from hw_model import hwCurveBuilder
+#Fully done 1-21-2026
+
+import numpy as np
+from scipy.optimize import differential_evolution, minimize, brentq
+from scipy.stats import norm
 
 logger = logging.getLogger(__name__)
 
+def rate_to_decimal(rate_input: Optional[float], percent_threshold: float = 0.5) -> Optional[float]:
+    if rate_input is None:
+        return None
+    return rate_input / 100.0 if rate_input > percent_threshold else rate_input
 
-class hwPricer:
-    def __init__(self, curve, n_paths: int = 10**5, n_steps: int = 252, seed: int = 2025, hw_params: dict | None = None):
+class hwCalibrator:
+    def __init__(self, model, pricer, mar_data_df, weights, mean_rever: bool = True, verbose: bool = True):
+        self.model = model
+        self.pricer = pricer
+        self.mar_data_df = mar_data_df
+        self.weights = np.asarray(weights, dtype=float)
+        self.mean_rever = mean_rever
+        self.verbose = verbose
+        self.cali_hist: list[Tuple[np.ndarray, float]] = []
 
-        self.curve = curve
-        self.curve_sim = hwCurveBuilder(curve, params=hw_params, n_paths=n_paths, n_steps=n_steps, seed=seed)
-        self.model = self.curve_sim.model
+    def log(self, msg: str) -> None:
+        if self.verbose:
+            logger.info(msg)
 
-    def set_sim(self, n_paths=None, n_steps=None, seed=None):
-        if n_paths is not None:
-            if not isinstance(n_paths, (int, float)) or n_paths <= 0:
-                raise ValueError(f"n_paths got to be positive, got {n_paths}")
-            self.curve_sim.sim.n_paths = int(n_paths)
-
-        if n_steps is not None:
-            if not isinstance(n_steps, (int, float)) or n_steps <= 0:
-                raise ValueError(f"n_steps got to be positive, got {n_steps}")
-            self.curve_sim.sim.n_steps = int(n_steps)
-
-        if seed is not None:
-            if not isinstance(seed, (int, float)):
-                raise ValueError(f"seed got to be an integer, got {seed}")
-            np.random.seed(int(seed))
-
-    def validate_times(self, option_expiry: float, bond_maturity: float) -> None:
-        if not isinstance(option_expiry, (int, float)) or option_expiry < 0:
-            raise ValueError(f"option_expiry must be non-negative float, got {option_expiry}")
-        if not isinstance(bond_maturity, (int, float)) or bond_maturity < 0:
-            raise ValueError(f"bond_maturity must be non-negative float, got {bond_maturity}")
-        if bond_maturity < option_expiry:
-            raise ValueError(f"bond_maturity ({bond_maturity}) must be >= option_expiry ({option_expiry})")
-
-    def validate_positive(self, value: float, name: str) -> None:
-        if not isinstance(value, (int, float)) or value <= 0:
-            raise ValueError(f"{name} must be positive, got {value}")
-
-    def price_zero_bond_put_mc(self, option_expiry: float, bond_maturity: float, k: float) -> float:
-        df = self.model.discount(option_expiry)
-        bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
-        payoff = np.maximum(k - bond_price_sim, 0)
-        logger.debug("MC Zero Bond Put Payoff: %s", payoff)
-
-        return np.mean(df * payoff)
-
-    def price_zero_bond_put_analytical(self, option_expiry: float, bond_maturity: float, k: float) -> float:
-        sigma = self.model.parameters["sigma"]
-        a = self.model.parameters["a"]
-        bond_sens = self.model.rate_sens(option_expiry, bond_maturity)
-        bond_price_maturity = self.model.discount(bond_maturity)
-        bond_price_expiry = self.model.discount(option_expiry)
-        vol_bond = sigma * np.sqrt((1 - np.exp(-2 * a * option_expiry)) / (2 * a)) * bond_sens
-        h = (1 / vol_bond) * np.log(bond_price_maturity / (k * bond_price_expiry)) + 0.5 * vol_bond
-
-        return k * bond_price_expiry * norm.cdf(-h + vol_bond) - bond_price_maturity * norm.cdf(-h)
-
-    def zero_bond_put(self, option_expiry: float, bond_maturity: float, k: float, mc: bool = False) -> float:
-        self.validate_times(option_expiry, bond_maturity)
-        self.validate_positive(k, "strike")
-        if option_expiry == 0.0:
-            bond_price = self.model.discount(bond_maturity)
-            return max(k - bond_price, 0.0)
-        if mc:  # This is monte carlo btw
-            return self.price_zero_bond_put_mc(option_expiry, bond_maturity, k)
-        
-        return self.price_zero_bond_put_analytical(option_expiry, bond_maturity, k)
-
-    def price_zero_bond_call_mc(self, option_expiry: float, bond_maturity: float, k: float) -> float:
-        if k <= 0:
-            raise ValueError(f"strike must be positive, got {k}")
-        df = self.model.discount(option_expiry)
-        bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
-        payoff = np.maximum(bond_price_sim - k, 0.0)
-
-        return float(np.mean(df * payoff))
-
-    def price_zero_bond_call_analytical(self, option_expiry: float, bond_maturity: float, k: float) -> float:
-        if k <= 0:
-            raise ValueError(f"strike must be positive, got {k}")
-        sigma = self.model.parameters["sigma"]
-        a = self.model.parameters["a"]
-        bond_sens = self.model.rate_sens(option_expiry, bond_maturity)
-        bond_price_maturity = self.model.discount(bond_maturity)
-        bond_price_expiry = self.model.discount(option_expiry)
-        vol_bond = sigma * np.sqrt((1.0 - np.exp(-2.0 * a * option_expiry)) / (2.0 * a)) * bond_sens
-        h = (1.0 / vol_bond) * np.log(bond_price_maturity / (k * bond_price_expiry)) + 0.5 * vol_bond
-
-        return float(bond_price_maturity * norm.cdf(h) - k * bond_price_expiry * norm.cdf(h - vol_bond))
-
-    def zero_bond_call(self, option_expiry: float, bond_maturity: float, k: float, mc: bool = False) -> float:
-        self.validate_times(option_expiry, bond_maturity)
-        self.validate_positive(k, "strike")
-
-        if mc:
-            return self.price_zero_bond_call_mc(option_expiry, bond_maturity, k)
-
-        return self.price_zero_bond_call_analytical(option_expiry, bond_maturity, k)
-
-    def caplet(self, fixing_time: float, payment_time: float, notional: float, k: float, method: str = "js") -> float:
-        self.validate_times(fixing_time, payment_time)
-        self.validate_positive(notional, "notional")
-        self.validate_positive(k, "strike")
-
-        accrual_period = payment_time - fixing_time
-        k_bond = 1.0 + k * accrual_period
-
-        if method == "mc":  # Monte Carlo
-            fwd_rate = self.curve_sim.inst_fwd_rate(fixing_time, fixing_time, payment_time)
-            payoff = accrual_period * np.maximum(fwd_rate - k, 0.0)
-            disc_payment = self.model.discount(payment_time)
-            caplet_value = disc_payment * np.mean(payoff)
-
-        elif method == "js":  # Jamshidian's Split
-            put_price = self.zero_bond_put(fixing_time, payment_time, 1.0 / k_bond, mc=False)
-            caplet_value = k_bond * put_price
-
-        elif method == "cf":  # Closed-Form
-            sigma = self.model.parameters["sigma"]
-            mean_reversion = self.model.parameters["a"]
-            bond_sens = self.model.rate_sens(fixing_time, payment_time)
-            disc_payment = self.model.discount(payment_time)
-            disc_fixing = self.model.discount(fixing_time)
-            vol_bond = (sigma * np.sqrt((1.0 - np.exp(-2.0 * mean_reversion * fixing_time)) / (2.0 * mean_reversion)) * bond_sens)
-            h = (1.0 / vol_bond) * np.log(disc_payment * k_bond / disc_fixing) + 0.5 * vol_bond
-            caplet_value = disc_fixing * norm.cdf(-h + vol_bond) - k_bond * disc_payment * norm.cdf(-h)
+    def objective_error(self, params_vector: Sequence[float]) -> float:
+        if self.mean_rever:
+            mean_rever_param = float(params_vector[0])
+            vol_param = float(params_vector[1])
+            self.model.parameters["a"] = mean_rever_param
+            self.model.parameters["sigma"] = vol_param
         else:
-            raise ValueError(f"method must be 'mc', 'js', or 'cf', got {method}")
+            vol_param = float(params_vector[0])
+            self.model.parameters["sigma"] = vol_param
 
-        return notional * caplet_value
+        num_instruments = len(self.mar_data_df)
+        if num_instruments == 0:
+            return float(np.inf)
 
-    def caplet_pv(self, fixing_time: float, payment_time: float, k: float, mc: bool) -> float:
-        accrual_period = payment_time - fixing_time
-        if mc:
-            fwd_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
-            payoff = accrual_period * np.maximum(fwd_rate - k, 0.0)
-            disc_payment = self.model.discount(payment_time)
+        squared_errors_sum = 0.0
 
-            return disc_payment * np.mean(payoff)
+        for instrument_idx in range(num_instruments):
+            row = self.mar_data_df.iloc[instrument_idx]
+            market_price = float(row["Price"])
+            strike = rate_to_decimal(row["Strike"])
+            notional = float(row["Notional"])
+            w = float(self.weights[instrument_idx])
+
+            inst_type = str(row["InstrumentType"])
+
+            if inst_type == "Caplet":
+                T1 = float(row["Expiry"])
+                T2 = float(row["Maturity"])
+                model_price = float(self.pricer.caplet(T1=T1, T2=T2, N=notional, K=strike, method="cf"))
+            elif inst_type == "Swap":
+                dates = row["Dates"]
+                payer_flag = row.get("PayerFlag", True)
+                model_price = float(self.pricer.swap(Tau=dates, N=notional, K=strike, payer=payer_flag, mc=False))
+            else:
+                raise ValueError(f"Unknown instrument type: {inst_type}")
+
+            diff = model_price - market_price
+            squared_errors_sum += (diff * w) ** 2
+
+        rmse = float(np.sqrt(squared_errors_sum / num_instruments))
+        params_copy = np.array(params_vector, dtype=float).copy()
+        self.cali_hist.append((params_copy, rmse))
+
+        return rmse
+
+    def calibrate(self,use_global: bool = True,de_tol: float = 1e-4,de_maxiter: int = 200, lbfgs_options: Optional[dict] = None):
+        if lbfgs_options is None:
+            lbfgs_options = {"ftol": 1e-9, "gtol": 1e-6, "maxiter": 500}
+
+        curr_a = float(self.model.parameters.get("a", 0.05))
+        initial_sigma = 0.01
+
+        if self.mean_rever:
+            bounds = [(1e-4, 1.0), (1e-5, 0.2)]
+            x0 = np.array([curr_a, initial_sigma], dtype=float)
         else:
-            k_bond = 1.0 + k * accrual_period
-            put_price = self.zero_bond_put(fixing_time, payment_time, 1.0 / k_bond, mc=False)
+            bounds = [(1e-5, 0.2)]
+            x0 = np.array([initial_sigma], dtype=float)
 
-            return k_bond * put_price
-
-    def cap(self, payment_schedule: np.ndarray, notional: float, k: float, mc: bool = False) -> float:
-        self.validate_positive(notional, "notional")
-        self.validate_positive(k, "strike")
-
-        cap_value = sum(
-            self.caplet_pv(payment_schedule[i - 1], payment_schedule[i], k, mc)
-            for i in range(1, len(payment_schedule)))
-
-        return notional * cap_value
-
-    def floor(self, payment_schedule: np.ndarray, notional: float, k: float, mc: bool = False) -> float:
-        self.validate_positive(notional, "notional")
-        self.validate_positive(k, "strike")
-
-        floor_value = 0.0
-        if mc:
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                fwd_rate = self.curve_sim.fwd_rate(
-                    fixing_time, fixing_time, payment_time, fwd_measure=True)
-                payoff = accrual_period * np.maximum(k - fwd_rate, 0.0)
-                disc_payment = self.model.discount(payment_time)
-                floor_value += disc_payment * np.mean(payoff)
+        if use_global:
+            result = differential_evolution(self.objective_error, bounds, strategy="best1bin", polish=True, tol=de_tol, maxiter=de_maxiter)
         else:
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                k_bond = 1.0 + k * accrual_period
-                call_price = self.zero_bond_call(fixing_time, payment_time, 1.0 / k_bond, mc=False)
-                floor_value += k_bond * call_price
+            result = minimize(self.objective_error, x0, method="L-BFGS-B", bounds=bounds, options=lbfgs_options)
 
-        return notional * floor_value
+        if result.success:
+            opt_params = np.array(result.x, dtype=float)
+            if self.mean_rever:
+                opt_a = float(opt_params[0])
+                opt_sigma = float(opt_params[1])
+                self.model.parameters["a"] = opt_a
+                self.model.parameters["sigma"] = opt_sigma
+                self.log("Calibration Successful")
+                self.log(f"Optimal Mean Reversion (a): {opt_a:.6f}")
+                self.log(f"Optimal Volatility (sigma): {opt_sigma:.6f}")
+            else:
+                opt_sigma = float(opt_params[0])
+                self.model.parameters["sigma"] = opt_sigma
+                self.log("Calibration Successful")
+                self.log(f"Optimal Volatility (sigma): {opt_sigma:.6f}")
 
-    def swap(self, payment_schedule: np.ndarray, notional: float, fixed_rate: float, payer: bool = True, mc: bool = False) -> float:
-        self.validate_positive(notional, "notional")
-        self.validate_positive(fixed_rate, "fixed_rate")
-
-        direction = 1.0 if payer else -1.0
-        annuity = 0.0
-        for i in range(1, len(payment_schedule)):
-            accrual_period = payment_schedule[i] - payment_schedule[i - 1]
-            disc_payment = self.model.discount(payment_schedule[i])
-            annuity += accrual_period * disc_payment
-
-        fixed_leg_pv = annuity * fixed_rate
-        floating_leg_pv = 0.0
-
-        if mc:
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                disc_payment = self.model.discount(payment_time)
-                fwd_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
-                floating_leg_pv += disc_payment * accrual_period * np.mean(fwd_rate)
+            final_rmse = float(result.fun)
+            self.log(f"Final RMSE: {final_rmse:.6f}")
         else:
-            floating_leg_pv = self.model.discount(payment_schedule[0]) - self.model.discount(payment_schedule[-1])
-        swap_value = notional * direction * (floating_leg_pv - fixed_leg_pv)
+            self.log(f"Calibration Failed: {result.message}")
 
-        return swap_value
+        return result
 
-    def jams_root(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, critical_rate: float) -> float:
-        root = 0.0
-        bond_price_final = 0.0
-        for i in range(1, len(payment_schedule)):
-            fixing_time = payment_schedule[i - 1]
-            payment_time = payment_schedule[i]
-            accrual_period = payment_time - fixing_time
-            bond_sens = self.model.rate_sens(option_expiry, payment_time)
-            bond_adj = self.model.bond_adj_factor(option_expiry, payment_time)
-            bond_price_i = bond_adj * np.exp(-bond_sens * critical_rate)
-            root += accrual_period * fixed_rate * bond_price_i
-            if i == len(payment_schedule) - 1:
-                bond_price_final = bond_price_i
 
-        root = root - (1.0 - bond_price_final)
+def invert_bach_normal_vol(
+    mar_price_input: float,
+    frd_rate: float,
+    k_rate: float,
+    time_to_expiry: float,
+    annuity_factor: float,
+    notional_size: float,
+    percent_threshold: float = 0.5,
+    max_expand: int = 10,
+    return_in_bps: bool = True) -> float:
 
-        return root
+    frd_dec = rate_to_decimal(frd_rate, percent_threshold=percent_threshold)
+    k_dec = rate_to_decimal(k_rate, percent_threshold=percent_threshold)
 
-    def find_rstar(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
-        root_func = lambda rate: self.jams_root(option_expiry, payment_schedule, fixed_rate, rate)
+    if frd_dec is None or k_dec is None:
+        raise ValueError("frd_rate and k_rate must be non-None")
 
-        f_lower = root_func(lower_bound)
-        f_upper = root_func(upper_bound)
+    if time_to_expiry <= 0 or annuity_factor <= 0 or notional_size <= 0:
+        raise ValueError("time_to_expiry, annuity_factor, and notional_size must be positive")
 
-        if f_lower * f_upper > 0:
-            lower_bound, upper_bound = -10.0, 10.0
-            f_lower = root_func(lower_bound)
-            f_upper = root_func(upper_bound)
-            if f_lower * f_upper > 0:
-                raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check fixed rate={fixed_rate}.")
+    target_price = float(mar_price_input)
 
-        return brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
+    def bach_formula_price(normal_vol: float) -> float:
+        if normal_vol <= 0:
+            return np.nan
+        sqrt_t = np.sqrt(time_to_expiry)
+        d = (frd_dec - k_dec) / (normal_vol * sqrt_t)
+        price = (annuity_factor * notional_size * ((frd_dec - k_dec) * norm.cdf(d) + normal_vol * sqrt_t * norm.pdf(d)))
 
-    def swaption(self, payment_schedule: np.ndarray, notional: float, fixed_rate: float, payer: bool = True, mc: bool = False) -> float:
-        self.validate_positive(notional, "notional")
-        self.validate_positive(fixed_rate, "fixed_rate")
+        return float(price)
 
-        direction = 1.0 if payer else -1.0
-        option_expiry = payment_schedule[0]
-        swap_maturity = payment_schedule[-1]
+    lower_vol = 1e-8
+    upper_vol = 1.0
 
-        if mc:
-            short_rate_expiry = self.curve_sim.sim.sim_short_rate_direct_fwd(option_expiry)
-            bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
-            bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
-            bond_price_final = bond_adj_final * np.exp(-bond_sens_final * short_rate_expiry)
-            floating_leg_value = 1.0 - bond_price_final
-            fixed_leg_value = 0.0
+    try:
+        f_low = bach_formula_price(lower_vol) - target_price
+        f_up = bach_formula_price(upper_vol) - target_price
 
-            for i in range(1, len(payment_schedule)):
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - payment_schedule[i - 1]
-                bond_adj_i = self.model.bond_adj_factor(option_expiry, payment_time)
-                bond_sens_i = self.model.rate_sens(option_expiry, payment_time)
-                bond_price_i = bond_adj_i * np.exp(-bond_sens_i * short_rate_expiry)
-                fixed_leg_value += accrual_period * fixed_rate * bond_price_i
+        if np.isnan(f_low) or np.isnan(f_up):
+            return float(np.nan)
 
-            disc_expiry = self.model.discount(option_expiry)
-            swaption_value = disc_expiry * notional * np.mean(np.maximum(direction * (floating_leg_value - fixed_leg_value), 0))
+        if f_low * f_up > 0:
+            for _ in range(max_expand):
+                upper_vol *= 2.0
+                f_up = bach_formula_price(upper_vol) - target_price
+                if np.isnan(f_up):
+                    return float(np.nan)
+                if f_low * f_up <= 0:
+                    break
 
-        else:
-            critical_rate = self.find_rstar(option_expiry, payment_schedule, fixed_rate)
-            fixed_leg_value = 0.0
-            for i in range(1, len(payment_schedule)):
-                fixing_time = payment_schedule[i - 1]
-                payment_time = payment_schedule[i]
-                accrual_period = payment_time - fixing_time
-                bond_sens = self.model.rate_sens(option_expiry, payment_time)
-                bond_adj = self.model.bond_adj_factor(option_expiry, payment_time)
-                strike_bond = bond_adj * np.exp(-bond_sens * critical_rate)
-                option = (self.zero_bond_put(option_expiry, payment_time, strike_bond, mc=False)
-                    if payer
-                    else self.zero_bond_call(option_expiry, payment_time, strike_bond, mc=False))
-                fixed_leg_value += accrual_period * fixed_rate * option
+        implied_vol = brentq(
+            lambda v: bach_formula_price(v) - target_price,
+            lower_vol,
+            upper_vol,
+        )
+    except ValueError:
+        return float(np.nan)
 
-            bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
-            bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
-            strike_final = bond_adj_final * np.exp(-bond_sens_final * critical_rate)
-            floating_leg_value = (self.zero_bond_put(option_expiry, swap_maturity, strike_final, mc=False)
-                if payer
-                else self.zero_bond_call(option_expiry, swap_maturity, strike_final, mc=False))
-            swaption_value = notional * (floating_leg_value + fixed_leg_value)
-
-        return swaption_value
-
-    def coupon_bond(self, payment_schedule: np.ndarray, coupon_rate: float, notional: float) -> float:
-        self.validate_positive(coupon_rate, "coupon_rate")
-        self.validate_positive(notional, "notional")
-
-        bond_price = 0.0
-        for i in range(len(payment_schedule)):
-            curr_time = payment_schedule[i]
-            previous_time = payment_schedule[i - 1] if i > 0 else 0.0
-            accrual_period = curr_time - previous_time
-            disc_payment = self.curve.discount(curr_time)
-            coupon_cashflow = notional * coupon_rate * accrual_period
-
-            if i == len(payment_schedule) - 1:
-                coupon_cashflow += notional
-
-            bond_price += coupon_cashflow * disc_payment
-
-        return bond_price
-
-    def floating_rate_note(self, payment_schedule: np.ndarray, notional: float) -> float:
-        self.validate_positive(notional, "notional")
-
-        disced_coupons = self.swap(payment_schedule, notional, fixed_rate=0.0, payer=False, mc=False)
-        disced_notional = notional * self.model.discount(payment_schedule[-1])
-        frn_price = disced_coupons + disced_notional
-
-        return frn_price
-
-    def jams_root_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, 
-                       strike_price: float, critical_rate: float) -> float:
-        bond_price = 0.0
-        for i in range(len(payment_schedule)):
-            current_time = payment_schedule[i]
-            previous_time = payment_schedule[i - 1] if i > 0 else 0.0
-            accrual_period = current_time - previous_time
-            bond_sens = self.model.rate_sens(option_expiry, current_time)
-            bond_adj = self.model.bond_adj_factor(option_expiry, current_time)
-            bond_price_i = bond_adj * np.exp(-bond_sens * critical_rate)
-            coupon_cashflow = notional * coupon_rate * accrual_period
-            if i == len(payment_schedule) - 1:
-                coupon_cashflow += notional
-            bond_price += coupon_cashflow * bond_price_i
-
-        return bond_price - strike_price
-
-    def find_rstar_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float, 
-                        strike_price: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
-        root_func = lambda rate: self.jams_root_bond(option_expiry, payment_schedule, coupon_rate, notional, strike_price, rate)
-
-        f_lower = root_func(lower_bound)
-        f_upper = root_func(upper_bound)
-
-        if f_lower * f_upper > 0:
-            lower_bound, upper_bound = -10.0, 10.0
-            f_lower = root_func(lower_bound)
-            f_upper = root_func(upper_bound)
-            if f_lower * f_upper > 0:
-                raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check strike_price={strike_price}.")
-
-        return brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
-
-    def bond_option(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, k: float, 
-                    notional: float, call: bool = True, mc: bool = False) -> float:
-        self.validate_times(option_expiry, payment_schedule[-1])
-        self.validate_positive(coupon_rate, "coupon_rate")
-        self.validate_positive(k, "strike")
-        self.validate_positive(notional, "notional")
-
-        if mc:
-            bond_price_dist = self.curve_sim.coupon_bond(option_expiry, payment_schedule, coupon_rate, notional)
-            disc_factor = self.model.discount(option_expiry)
-            option_value = disc_factor * np.mean(
-                np.maximum(bond_price_dist - k, 0) if call else np.maximum(k - bond_price_dist, 0))
-        else:
-            critical_rate = self.find_rstar_bond(option_expiry, payment_schedule, coupon_rate, notional, k)
-            option_value = 0.0
-
-            for i in range(len(payment_schedule)):
-                curr_time = payment_schedule[i]
-                prev_time = payment_schedule[i - 1] if i > 0 else 0.0
-                accrual_period = curr_time - prev_time
-                bond_sens = self.model.rate_sens(option_expiry, curr_time)
-                bond_adj = self.model.bond_adj_factor(option_expiry, curr_time)
-                k_bond = bond_adj * np.exp(-bond_sens * critical_rate)
-                option = (self.zero_bond_call(option_expiry, curr_time, k_bond, mc=False)
-                    if call
-                    else self.zero_bond_put(option_expiry, curr_time, k_bond, mc=False))
-                coupon_cashflow = notional * coupon_rate * accrual_period
-                if i == len(payment_schedule) - 1:
-                    coupon_cashflow += notional
-                option_value += coupon_cashflow * option
-
-        return option_value
+    if return_in_bps:
+        return float(implied_vol * 10_000.0)
+    return float(implied_vol)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    logger.info("hwPricer module is good")
+    logger.info("Calibration module imported and ready.")
