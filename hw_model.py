@@ -1,9 +1,12 @@
-"""A Monte Carlo and Analytical pricing engine for the HW interest rate model"""
-#Fully Done 1-19-2026
+"""A Monte Carlo and analytical pricing engine for the Hull-White interest rate model"""
+#Fully done 1-21-2026
 
+import logging
 import pandas as pd
 import numpy as np
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 class hwModel:
     def __init__(self, curve: Any, parameters: dict | None = None) -> None:
@@ -28,6 +31,8 @@ class hwModel:
         self.sigma: float = self.parameters["sigma"]
         self.r0: float = self.parameters["r0"]
 
+        logger.debug("Initialized hwModel with a=%s, sigma=%s, r0=%s", self.a, self.sigma, self.r0)
+
     def inst_fwd_rate(self, maturity: float) -> float:
         return self.curve.inst_fwd_rate(maturity)
 
@@ -45,13 +50,12 @@ class hwModel:
         fwd_plus = self.inst_fwd_rate(maturity + dt)
         df_dt = (fwd_plus - fwd_minus) / (2.0 * dt)
 
-        convexity = (sigma**2 / (2.0 * a**2)) * (1.0 - np.exp(-a * maturity))**2
+        convexity = (sigma**2 / (2.0 * a**2)) * (1.0 - np.exp(-a * maturity)) ** 2
 
         return df_dt + a * self.inst_fwd_rate(maturity) + convexity
 
     def rate_sens(self, start_time: float, end_time: float) -> float:
         a = self.a
-
         return (1.0 - np.exp(-a * (end_time - start_time))) / a
 
     def bond_adj_factor(self, start_time: float, end_time: float) -> float:
@@ -67,7 +71,6 @@ class hwModel:
         adjustment = np.exp(risk_sens * fwd - (sigma**2 / (4.0 * a)) * risk_sens**2 * (1.0 - np.exp(-2.0 * a * start_time)))
 
         return (df_maturity / df_start) * adjustment
-
 
     def short_rate(self, maturity: float, z: float | None = None) -> float:
         if z is None:
@@ -92,12 +95,16 @@ class hwModel:
 
         return expected_rate + np.sqrt(variance) * z
 
+
 class hwSim:
-    def __init__(self, model, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025):
+    def __init__(self, model: hwModel, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025,) -> None:
+
         self.model = model
         self.n_paths = n_paths
         self.n_steps = n_steps
         self.rng = np.random.default_rng(seed)
+
+        logger.debug("Initialized hwSim with n_paths=%s, n_steps=%s, seed=%s", n_paths, n_steps, seed)
 
     def sim_short_rate_direct(self, future_time: float) -> np.ndarray:
         shocks = self.rng.normal(size=self.n_paths)
@@ -107,8 +114,8 @@ class hwSim:
 
     def sim_short_rate_direct_fwd(self, future_time: float) -> np.ndarray:
         shocks = self.rng.normal(size=self.n_paths)
-
         sim_rates = np.array([self.model.short_rate_forward(future_time, z=z_val) for z_val in shocks])
+
         return sim_rates
 
     def sim_short_rate_euler(self, future_time: float) -> tuple[np.ndarray, np.ndarray]:
@@ -140,30 +147,33 @@ class hwSim:
         a = self.model.a
         sigma = self.model.sigma
 
-        analytic_mean = (r0 * np.exp(-a * future_time) + self.model.theta(future_time) 
-                         - np.exp(-a * future_time) * self.model.theta(0.0))
+        analytic_mean = (r0 * np.exp(-a * future_time) + self.model.theta(future_time) - np.exp(-a * future_time) * self.model.theta(0.0))
 
         analytic_std = np.sqrt((sigma**2 / (2.0 * a)) * (1.0 - np.exp(-2.0 * a * future_time)))
 
-        comparison_data = {"Mean": [np.mean(euler_final), np.mean(direct_paths), analytic_mean],
-            "Std Dev": [np.std(euler_final), np.std(direct_paths), analytic_std],}
+        comparison_data = {
+            "Mean": [np.mean(euler_final), np.mean(direct_paths), analytic_mean],
+            "Std Dev": [np.std(euler_final), np.std(direct_paths), analytic_std]}
 
-        df = pd.DataFrame(comparison_data,index=["Euler Simulation", "Direct Simulation", "Analytic"],)
+        df = pd.DataFrame(comparison_data, index=["Euler Simulation", "Direct Simulation", "Analytic"])
+
+        logger.debug("Validation DataFrame:\n%s", df)
 
         return df
 
 
 class hwCurveBuilder:
-    def __init__(self, curve, params=None, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025):
+    def __init__(self, curve: Any, params: dict | None = None, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025) -> None:
         self.curve = curve
         self.model = hwModel(self.curve, params)
         self.sim = hwSim(self.model, n_paths=n_paths, n_steps=n_steps, seed=seed)
 
+        logger.debug("Initialized hwCurveBuilder for curve=%s", curve)
+
     def short_rate(self, target_maturity: float, fwd_measure: bool = False) -> np.ndarray:
         if fwd_measure:
             return self.sim.sim_short_rate_direct_fwd(target_maturity)
-        else:
-            return self.sim.sim_short_rate_direct(target_maturity)
+        return self.sim.sim_short_rate_direct(target_maturity)
 
     def zero_coupon_bond(self, eval_time: float, maturity: float, fwd_measure: bool = False) -> np.ndarray:
         if fwd_measure:
@@ -172,8 +182,9 @@ class hwCurveBuilder:
             rate_at_eval = self.sim.sim_short_rate_direct(eval_time)
 
         bond_price_prefactor = self.model.bond_adj_factor(eval_time, maturity)
-        short_rate_duration = self.model.rate_sens(eval_time, maturity)
-        bond_price = bond_price_prefactor * np.exp(-short_rate_duration * rate_at_eval)
+        short_rate_dur = self.model.rate_sens(eval_time, maturity)
+        bond_price = bond_price_prefactor * np.exp(-short_rate_dur * rate_at_eval)
+
         return bond_price
 
     def disc_factor(self, eval_time: float, maturity: float) -> np.ndarray:
@@ -191,14 +202,13 @@ class hwCurveBuilder:
         market_fwd_end = self.model.inst_fwd_rate(end_time)
         market_fwd_start = self.model.inst_fwd_rate(start_time)
 
-        short_rate_duration = self.model.rate_sens(start_time, end_time)
+        short_rate_dur = self.model.rate_sens(start_time, end_time)
         a = self.model.a
         sigma = self.model.sigma
 
         convexity_correction = (sigma**2) * (1.0 - np.exp(-2.0 * a * start_time)) / (2.0 * a)
-        predicted_forward = (market_fwd_end + np.exp(-a * (end_time - start_time)) 
-                             * (realized_rate - market_fwd_start + convexity_correction * short_rate_duration))
-        
+        predicted_forward = market_fwd_end + np.exp(-a * (end_time - start_time)) * (realized_rate - market_fwd_start + convexity_correction * short_rate_dur)
+
         return predicted_forward
 
     def long_rate(self, start_time: float, end_time: float, fwd_measure: bool = False) -> np.ndarray:
@@ -218,11 +228,12 @@ class hwCurveBuilder:
 
         return yield_to_maturity
 
-    def fwd_rate(self, eval_time: float, start_date: float, end_date: float, fwd_measure: bool = False) -> np.ndarray:
-        discount_start = self.zero_coupon_bond(eval_time, start_date, fwd_measure=fwd_measure)
-        discount_end = self.zero_coupon_bond(eval_time, end_date, fwd_measure=fwd_measure)
-        forward_libor = (discount_start / discount_end - 1.0) / (end_date - start_date)
-        return forward_libor
+    def fwd_rate(self, eval_time: float, start_date: float, end_date: float, fwd_measure: bool = False,) -> np.ndarray:
+        disc_start = self.zero_coupon_bond(eval_time, start_date, fwd_measure=fwd_measure)
+        disc_end = self.zero_coupon_bond(eval_time, end_date, fwd_measure=fwd_measure)
+        fwd_libor = (disc_start / disc_end - 1.0) / (end_date - start_date)
+
+        return fwd_libor
 
     def coupon_bond(self, eval_time: float, coupon_schedule: list[float], coupon_rate: float, principal: float, fwd_measure: bool = False) -> float:
         remaining_coupons = [t for t in coupon_schedule if t >= eval_time]
@@ -236,7 +247,10 @@ class hwCurveBuilder:
             disc_to_eval = self.zero_coupon_bond(eval_time, remaining_coupons[i], fwd_measure=fwd_measure)
             bond_value += coupon_cf * np.mean(disc_to_eval)
 
-        accrual_last = remaining_coupons[-1] - remaining_coupons[-2] if len(remaining_coupons) > 1 else 0.0
+        accrual_last = (remaining_coupons[-1] - remaining_coupons[-2]
+            if len(remaining_coupons) > 1
+            else 0.0)
+        
         final_coupon_cf = coupon_rate * principal * accrual_last
         final_disc_to_eval = self.zero_coupon_bond(eval_time, remaining_coupons[-1], fwd_measure=fwd_measure)
         bond_value += (principal + final_coupon_cf) * np.mean(final_disc_to_eval)
@@ -245,4 +259,5 @@ class hwCurveBuilder:
 
 
 if __name__ == "__main__":
-    print("Hull-White model and simulation modules work")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logger.info("HW model and simulation modules good")
