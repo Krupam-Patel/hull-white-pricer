@@ -1,0 +1,148 @@
+# %%
+import numpy as np
+import pandas as pd
+from scipy.interpolate import interp1d
+
+from hw_pricer import hwPricer
+
+# %%
+class SimpleZeroCurve:
+
+    def __init__(self, tenors: np.ndarray, zero_rates: np.ndarray):
+        if len(tenors) != len(zero_rates):
+            raise ValueError("tenors and zero_rates must have same length")
+        if np.any(tenors <= 0):
+            raise ValueError("tenors must be positive")
+
+        self.tenors = np.array(tenors, dtype=float)
+        self.zero_rates = np.array(zero_rates, dtype=float)
+
+        self._z_interp = interp1d(self.tenors, self.zero_rates, kind="linear", fill_value="extrapolate", assume_sorted=False)
+
+    def zero_rate(self, t: float) -> float:
+        if t <= 0:
+            return float(self.zero_rates[0])
+        return float(self._z_interp(t))
+
+    def discount(self, t: float) -> float:
+        r = self.zero_rate(t)
+        return float(np.exp(-r * t))
+
+    def inst_fwd_rate(self, t: float) -> float:
+        return self.zero_rate(t)
+
+    def fwd_rate(self, start: float, end: float) -> float:
+        if end <= start:
+            raise ValueError("end must be > start")
+        p_start = self.discount(start)
+        p_end = self.discount(end)
+        return (p_start / p_end - 1.0) / (end - start)
+
+# %%
+import pandas as pd
+
+path = r"C:\Users\Krupam\Downloads\USD Swap Rates Historical.xlsx"
+df = pd.read_excel(path)  # now works once openpyxl is installed
+
+df.head()
+
+# %%
+latest = df.iloc[-1]
+
+tenors = np.array([1.0, 2.0, 3.0, 5.0, 7.0, 10.0], dtype=float)
+
+zero_rates = np.array([
+    latest["1Y Rate (%)"],
+    latest["2Y Rate (%)"],
+    latest["3Y Rate (%)"],
+    latest["5Y Rate (%)"],
+    latest["7Y Rate (%)"],
+    latest["10Y Rate (%)"]], dtype=float) / 100.0
+
+# %%
+curve = SimpleZeroCurve(tenors, zero_rates)
+
+for t in [1.0, 2.0, 3.0, 5.0, 7.0, 10.0]:
+    print(f"t={t:4.1f}y, zero={curve.zero_rate(t):.4%}, DF={curve.discount(t):.6f}")
+
+
+# %%
+hw_params = {"a": 0.03, "sigma": 0.01}
+
+pricer = hwPricer(curve=curve, n_paths=50_000, n_steps=252, seed=2025, hw_params=hw_params)
+
+# %%
+price = pricer.zero_bond_put(option_expiry=1.0, bond_maturity=3.0, k=0.97, mc=False)
+
+price
+
+# %%
+option_expiry_years = 1.0
+bond_maturity_years = 3.0
+strike_price = 0.97
+
+bond_put_price = pricer.zero_bond_put(option_expiry=option_expiry_years, bond_maturity=bond_maturity_years, k=strike_price, mc=False)
+
+bond_call_price = pricer.zero_bond_call(option_expiry=option_expiry_years, bond_maturity=bond_maturity_years, k=strike_price, mc=False)
+
+print("Zero-coupon bond options (analytical):")
+print(f"  Expiry: {option_expiry_years:.2f}y, Maturity: {bond_maturity_years:.2f}y")
+print(f"  Put  (K={strike_price}):  {bond_put_price:.6f}")
+print(f"  Call (K={strike_price}):  {bond_call_price:.6f}")
+
+# %%
+fixing_date_years = 0.5
+payment_date_years = 1.0
+notional_amount = 1_000_000.0
+cap_strike_rate = 0.03
+
+caplet_cf = pricer.caplet(fixing_time=fixing_date_years, payment_time=payment_date_years, notional=notional_amount, k=cap_strike_rate, method="cf")
+
+caplet_js = pricer.caplet(fixing_time=fixing_date_years, payment_time=payment_date_years, notional=notional_amount, k=cap_strike_rate, method="js")
+
+print("\nCaplet pricing:")
+print(f"  Notional: {notional_amount:,.0f}")
+print(f"  Strike:   {cap_strike_rate*100:.2f}%")
+print(f"  Closed-form:  {caplet_cf:,.2f}")
+print(f"  Jamshidian:   {caplet_js:,.2f}")
+
+
+# %%
+payment_dates = np.array([0.25, 0.50, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+notional_amount = 10_000_000.0
+cap_floor_strike = 0.025 
+
+cap_price = pricer.cap(payment_schedule=payment_dates, notional=notional_amount, k=cap_floor_strike, mc=False)
+
+floor_price = pricer.floor(payment_schedule=payment_dates, notional=notional_amount, k=cap_floor_strike, mc=False)
+
+swap_intrinsic = pricer.swap(payment_schedule=payment_dates, notional=notional_amount, fixed_rate=cap_floor_strike, payer=True, mc=False)
+
+print("Cap / floor / swap example:")
+print(f"  Notional: {notional_amount/1e6:.0f}M, Strike: {cap_floor_strike*100:.2f}%")
+print(f"  Cap price:   {cap_price:,.2f}")
+print(f"  Floor price: {floor_price:,.2f}")
+print(f"  Cap - Floor: {cap_price - floor_price:,.2f}")
+print(f"  Swap value:  {swap_intrinsic:,.2f}")
+
+
+# %%
+option_expiry_years = 1.0
+bond_maturity_years = 2.5
+strike_price = 0.95
+
+put_analytical = pricer.zero_bond_put(option_expiry=option_expiry_years, bond_maturity=bond_maturity_years, k=strike_price, mc=False)
+
+pricer.set_sim(n_paths=50_000, seed=42)
+
+put_mc = pricer.zero_bond_put(option_expiry=option_expiry_years, bond_maturity=bond_maturity_years, k=strike_price, mc=True)
+
+diff_bps = (put_mc - put_analytical) * 10_000
+
+print("Monte Carlo vs analytical (zero-coupon put):")
+print(f"  Analytical: {put_analytical:.6f}")
+print(f"  MC (50k):   {put_mc:.6f}")
+print(f"  Diff:       {diff_bps:.2f} bps")
+
+
+
