@@ -1,32 +1,44 @@
 """A Monte Carlo and analytical pricing engine for the Hull-White interest rate model"""
-#Fully done 1-21-2026
+#Fully done 1/21/2026
+#Comments done 1/24/2026
+
+# I tried putting comments to explain my thought process for everything in the code
+# If something is still fuzzy, there is a typo, or there is a better way to do something, please dm on linkedin!
+#https://www.linkedin.com/in/krupam-patel/
 
 import logging
 import pandas as pd
 import numpy as np
 from typing import Any
 
+
 logger = logging.getLogger(__name__)
+
 
 class hwModel:
     def __init__(self, curve: Any, parameters: dict | None = None) -> None:
+        # Stores the input curve and set default model parameters
         self.curve = curve
         defaults = {"a": 0.01, "sigma": 0.01, "r0": curve.inst_fwd_rate(0.0)}
 
+        # Uses provided parameters, falling back to defaults if missing
         if parameters is None:
             parameters = {}
 
         self.parameters = {
             "a": parameters.get("a", defaults["a"]),
             "sigma": parameters.get("sigma", defaults["sigma"]),
-            "r0": parameters.get("r0", defaults["r0"])
-        }
+            "r0": parameters.get("r0", defaults["r0"])}
 
+        # Basic sanity checks on model parameters
         if self.parameters["a"] <= 0.0:
-            raise ValueError(f"Mean reversion 'a' must be positive, got {self.parameters['a']}")
+            raise ValueError(
+                f"Mean reversion 'a' must be positive, got {self.parameters['a']}")
         if self.parameters["sigma"] <= 0.0:
-            raise ValueError(f"Volatility 'sigma' must be positive, got {self.parameters['sigma']}")
+            raise ValueError(
+                f"Volatility 'sigma' must be positive, got {self.parameters['sigma']}")
 
+        # Unpack parameters into attributes
         self.a: float = self.parameters["a"]
         self.sigma: float = self.parameters["sigma"]
         self.r0: float = self.parameters["r0"]
@@ -34,31 +46,39 @@ class hwModel:
         logger.debug("Initialized hwModel with a=%s, sigma=%s, r0=%s", self.a, self.sigma, self.r0)
 
     def inst_fwd_rate(self, maturity: float) -> float:
+        # Instantaneous forward rate from the input curve
         return self.curve.inst_fwd_rate(maturity)
 
     def discount(self, maturity: float) -> float:
+        # Discount factor from the input curve
         return self.curve.discount(maturity)
 
     def fwd_rate(self, start_time: float, end_time: float) -> float:
+        # Forward rate between two times from the input curve
         return self.curve.fwd_rate(start_time, end_time)
 
     def theta(self, maturity: float, dt: float = 1e-4) -> float:
+        # Hull–White drift term calibrated to the initial curve
         a = self.a
         sigma = self.sigma
 
+        # Numerical derivative of the instantaneous forward rate
         fwd_minus = self.inst_fwd_rate(maturity - dt)
         fwd_plus = self.inst_fwd_rate(maturity + dt)
         df_dt = (fwd_plus - fwd_minus) / (2.0 * dt)
 
+        # Convexity adjustment term
         convexity = (sigma**2 / (2.0 * a**2)) * (1.0 - np.exp(-a * maturity)) ** 2
 
         return df_dt + a * self.inst_fwd_rate(maturity) + convexity
 
     def rate_sens(self, start_time: float, end_time: float) -> float:
+        # Sensitivity of the bond yield to the short rate over start_time and end_time
         a = self.a
         return (1.0 - np.exp(-a * (end_time - start_time))) / a
 
     def bond_adj_factor(self, start_time: float, end_time: float) -> float:
+        # Adjustment factor to match model bond prices to the market curve
         a = self.a
         sigma = self.sigma
 
@@ -66,13 +86,16 @@ class hwModel:
         df_maturity = self.discount(end_time)
         df_start = self.discount(start_time)
 
+        # Forward short rate at start_time
         fwd = self.inst_fwd_rate(start_time)
 
+        # Convexity adjustment in bond pricing
         adjustment = np.exp(risk_sens * fwd - (sigma**2 / (4.0 * a)) * risk_sens**2 * (1.0 - np.exp(-2.0 * a * start_time)))
 
         return (df_maturity / df_start) * adjustment
 
     def short_rate(self, maturity: float, z: float | None = None) -> float:
+        # Closed‑form short rate distribution at a future time under the risk‑neutral measure
         if z is None:
             z = np.random.normal()
         r0 = self.r0
@@ -80,11 +103,12 @@ class hwModel:
         sigma = self.sigma
 
         variance = (sigma**2 / (2.0 * a)) * (1.0 - np.exp(-2.0 * a * maturity))
-        mean = r0 * np.exp(-a * maturity)
+        mean = r0 * np.exp(-a * maturity) + self.inst_fwd_rate(maturity) - r0
 
         return mean + np.sqrt(variance) * z
 
     def short_rate_forward(self, maturity: float, z: float | None = None) -> float:
+        # Short rate distribution at a future time under the forward measure
         if z is None:
             z = np.random.normal()
         a = self.a
@@ -97,8 +121,8 @@ class hwModel:
 
 
 class hwSim:
-    def __init__(self, model: hwModel, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025,) -> None:
-
+    def __init__(self, model: hwModel, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025) -> None:
+        # Store model and simulation settings
         self.model = model
         self.n_paths = n_paths
         self.n_steps = n_steps
@@ -107,18 +131,21 @@ class hwSim:
         logger.debug("Initialized hwSim with n_paths=%s, n_steps=%s, seed=%s", n_paths, n_steps, seed)
 
     def sim_short_rate_direct(self, future_time: float) -> np.ndarray:
+        # Simulate the short rate at a single future time using the closed form
         shocks = self.rng.normal(size=self.n_paths)
         simulated_rates = np.array([self.model.short_rate(future_time, z=z_val) for z_val in shocks])
 
         return simulated_rates
 
     def sim_short_rate_direct_fwd(self, future_time: float) -> np.ndarray:
+        # Simulates the short rate at a future time under the forward measure
         shocks = self.rng.normal(size=self.n_paths)
         sim_rates = np.array([self.model.short_rate_forward(future_time, z=z_val) for z_val in shocks])
 
         return sim_rates
 
     def sim_short_rate_euler(self, future_time: float) -> tuple[np.ndarray, np.ndarray]:
+        # Euler scheme for full short‑rate paths up to future_time
         dt = future_time / self.n_steps
         time_grid = np.linspace(0.0, future_time, self.n_steps + 1)
         rate_paths = np.zeros((self.n_paths, self.n_steps + 1))
@@ -139,6 +166,7 @@ class hwSim:
         return rate_paths, time_grid
 
     def validate_sim(self, future_time: float) -> pd.DataFrame:
+        # Compare Euler and direct simulations against analytic mean and std
         euler_paths, _ = self.sim_short_rate_euler(future_time)
         euler_final = euler_paths[:, -1]
         direct_paths = self.sim_short_rate_direct(future_time)
@@ -151,9 +179,8 @@ class hwSim:
 
         analytic_std = np.sqrt((sigma**2 / (2.0 * a)) * (1.0 - np.exp(-2.0 * a * future_time)))
 
-        comparison_data = {
-            "Mean": [np.mean(euler_final), np.mean(direct_paths), analytic_mean],
-            "Std Dev": [np.std(euler_final), np.std(direct_paths), analytic_std]}
+        comparison_data = {"Mean": [np.mean(euler_final), np.mean(direct_paths), analytic_mean], 
+                           "Std Dev": [np.std(euler_final), np.std(direct_paths), analytic_std]}
 
         df = pd.DataFrame(comparison_data, index=["Euler Simulation", "Direct Simulation", "Analytic"])
 
@@ -164,6 +191,7 @@ class hwSim:
 
 class hwCurveBuilder:
     def __init__(self, curve: Any, params: dict | None = None, n_paths: int = 10**5, n_steps: int = 100, seed: int = 2025) -> None:
+        # Wrapper that ties the curve, model, and simulator together
         self.curve = curve
         self.model = hwModel(self.curve, params)
         self.sim = hwSim(self.model, n_paths=n_paths, n_steps=n_steps, seed=seed)
@@ -171,11 +199,13 @@ class hwCurveBuilder:
         logger.debug("Initialized hwCurveBuilder for curve=%s", curve)
 
     def short_rate(self, target_maturity: float, fwd_measure: bool = False) -> np.ndarray:
+        # Short‑rate samples at a given maturity, under the risk‑neutral or forward measure
         if fwd_measure:
             return self.sim.sim_short_rate_direct_fwd(target_maturity)
         return self.sim.sim_short_rate_direct(target_maturity)
 
     def zero_coupon_bond(self, eval_time: float, maturity: float, fwd_measure: bool = False) -> np.ndarray:
+        # Simulated zero‑coupon bond prices at maturity, seen from eval_time
         if fwd_measure:
             rate_at_eval = self.sim.sim_short_rate_direct_fwd(eval_time)
         else:
@@ -188,6 +218,7 @@ class hwCurveBuilder:
         return bond_price
 
     def disc_factor(self, eval_time: float, maturity: float) -> np.ndarray:
+        # Discount factors from eval_time to maturity using simulated paths
         r_paths, time_grid = self.sim.sim_short_rate_euler(maturity)
         maturity_index = np.searchsorted(time_grid, maturity)
         start_idx = np.searchsorted(time_grid, eval_time)
@@ -198,6 +229,7 @@ class hwCurveBuilder:
         return df
 
     def inst_fwd_rate(self, start_time: float, end_time: float) -> np.ndarray:
+        # Model‑implied instantaneous forward rate between start_time and end_time
         realized_rate = self.sim.sim_short_rate_direct(start_time)
         market_fwd_end = self.model.inst_fwd_rate(end_time)
         market_fwd_start = self.model.inst_fwd_rate(start_time)
@@ -212,6 +244,7 @@ class hwCurveBuilder:
         return predicted_forward
 
     def long_rate(self, start_time: float, end_time: float, fwd_measure: bool = False) -> np.ndarray:
+        # Model‑implied yield to maturity between start_time and end_time
         if fwd_measure:
             spot_short_rate = self.sim.sim_short_rate_direct_fwd(start_time)
         else:
@@ -228,7 +261,8 @@ class hwCurveBuilder:
 
         return yield_to_maturity
 
-    def fwd_rate(self, eval_time: float, start_date: float, end_date: float, fwd_measure: bool = False,) -> np.ndarray:
+    def fwd_rate(self, eval_time: float, start_date: float, end_date: float, fwd_measure: bool = False) -> np.ndarray:
+        # Forward deposit‑style forward rate between start_date and end_date
         disc_start = self.zero_coupon_bond(eval_time, start_date, fwd_measure=fwd_measure)
         disc_end = self.zero_coupon_bond(eval_time, end_date, fwd_measure=fwd_measure)
         fwd_libor = (disc_start / disc_end - 1.0) / (end_date - start_date)
@@ -236,21 +270,24 @@ class hwCurveBuilder:
         return fwd_libor
 
     def coupon_bond(self, eval_time: float, coupon_schedule: list[float], coupon_rate: float, principal: float, fwd_measure: bool = False) -> float:
+        # Simulated price of a fixed‑coupon bond at eval_time
         remaining_coupons = [t for t in coupon_schedule if t >= eval_time]
         if not remaining_coupons:
             return 0.0
         bond_value = 0.0
 
+        # Sum PV of all remaining coupons except the last one
         for i in range(len(remaining_coupons) - 1):
             accrual_period = remaining_coupons[i + 1] - remaining_coupons[i]
             coupon_cf = coupon_rate * principal * accrual_period
             disc_to_eval = self.zero_coupon_bond(eval_time, remaining_coupons[i], fwd_measure=fwd_measure)
             bond_value += coupon_cf * np.mean(disc_to_eval)
 
+        # Add final coupon plus principal repayment
         accrual_last = (remaining_coupons[-1] - remaining_coupons[-2]
             if len(remaining_coupons) > 1
             else 0.0)
-        
+
         final_coupon_cf = coupon_rate * principal * accrual_last
         final_disc_to_eval = self.zero_coupon_bond(eval_time, remaining_coupons[-1], fwd_measure=fwd_measure)
         bond_value += (principal + final_coupon_cf) * np.mean(final_disc_to_eval)
@@ -259,5 +296,5 @@ class hwCurveBuilder:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    logger.info("HW model and simulation modules good")
+    logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logger.info("HW model and simulation modules loaded")
