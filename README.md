@@ -46,7 +46,7 @@ This repository provides a set of Python modules for building discount curves, i
 - https://docs.python.org/3/howto/logging.html
 - https://www.wallstreetprep.com/knowledge/discount-factor/
 
-- Research Papers
+### Research Papers
 - https://www.casact.org/sites/default/files/old/oncourses_module4_ahlgrim.pdf
 - https://www.math.kth.se/matstat/seminarier/reports/M-exjobb12/120220b.pdf (Arnaud Blanchard)
 - https://arxiv.org/pdf/1808.03463 (Julian Holzermann)
