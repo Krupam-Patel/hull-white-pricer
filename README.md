@@ -38,7 +38,7 @@ This repository provides a set of Python modules for building discount curves, i
 
 ---
 
-## Sources / Learning articles I used to make this algo 
+## Sources I used to make this algorithm 
 
 - Perplexity / Chatgpt
 - A lottttt of Youtube
