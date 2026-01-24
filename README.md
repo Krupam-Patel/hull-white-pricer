@@ -37,3 +37,16 @@ This repository provides a set of Python modules for building discount curves, i
 - Calibration framework suitable for real market data
 
 ---
+
+## Sources / Learning articles I used to make this algo 
+
+- Perplexity / Chatgpt
+- A lottttt of Youtube
+- https://www.tutorialspoint.com/scipy/scipy_interpolate_pchipinterpolator_function.htm
+- https://docs.python.org/3/howto/logging.html
+- https://www.wallstreetprep.com/knowledge/discount-factor/
+
+- Research Papers
+- https://www.casact.org/sites/default/files/old/oncourses_module4_ahlgrim.pdf
+- https://www.math.kth.se/matstat/seminarier/reports/M-exjobb12/120220b.pdf (Arnaud Blanchard)
+- https://arxiv.org/pdf/1808.03463 (Julian Holzermann)
