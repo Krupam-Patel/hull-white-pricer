@@ -1,10 +1,10 @@
 """A Monte Carlo and analytical pricing engine for the Hull-White interest rate model"""
-#Fully done 1/21/2026
-#Comments done 1/24/2026
+# Fully done 1/21/2026
+# Comments done 1/24/2026
 
 # I tried putting comments to explain my thought process for everything in the code
 # If something is still fuzzy, there is a typo, or there is a better way to do something, please dm on linkedin!
-#https://www.linkedin.com/in/krupam-patel/
+# https://www.linkedin.com/in/krupam-patel/
 
 import logging
 import pandas as pd
