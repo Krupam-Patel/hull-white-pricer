@@ -1,5 +1,11 @@
 """Interest Rate Derivatives Pricing"""
-# Fully done 1-21/2026
+# Fully done 1/21/2026
+# Commenting done 1/24/2026
+
+# I tried putting comments to explain my thought process for everything in the code
+# If something is still fuzzy, there is a typo, or there is a better way to do something, please dm on linkedin!
+#https://www.linkedin.com/in/krupam-patel/
+
 
 import logging
 import numpy as np
@@ -30,29 +36,29 @@ class hwPricer:
                 raise ValueError(f"n_steps got to be positive, got {n_steps}")
             self.curve_sim.sim.n_steps = int(n_steps)
 
-        # Resets random seed for reproducibility
+        # Resets random seed for consistant results
         if seed is not None:
             if not isinstance(seed, (int, float)):
                 raise ValueError(f"seed got to be an integer, got {seed}")
             np.random.seed(int(seed))
 
     def validate_times(self, option_expiry: float, bond_maturity: float) -> None:
-        # Sanity checks for option and bond times
+        # Sanity checks for option expiry and bond maturity
         if not isinstance(option_expiry, (int, float)) or option_expiry < 0:
             raise ValueError(f"option_expiry must be non-negative float, got {option_expiry}")
         if not isinstance(bond_maturity, (int, float)) or bond_maturity < 0:
             raise ValueError(f"bond_maturity must be non-negative float, got {bond_maturity}")
         if bond_maturity < option_expiry:
-            # Option cannot expire after the underlying bond matures
+            # Makes sure option cannot expire after the underlying bond matures
             raise ValueError(f"bond_maturity ({bond_maturity}) must be >= option_expiry ({option_expiry})")
 
     def validate_positive(self, value: float, name: str) -> None:
-        # Generic positive-number validator (for notionals, strikes, rates)
+        # Makes sure notionals, strikes, rates is positive
         if not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(f"{name} must be positive, got {value}")
 
     def price_zero_bond_put_mc(self, option_expiry: float, bond_maturity: float, k: float) -> float:
-        # Discount factor to option expiry under risk-neutral measure
+        # Discount factor from today to option expiry under the risk‑neutral measure
         df = self.model.discount(option_expiry)
         # Simulates zero-coupon bond price at option expiry in forward measure
         bond_price_sim = self.curve_sim.zero_coupon_bond(option_expiry, bond_maturity, fwd_measure=True)
@@ -60,7 +66,7 @@ class hwPricer:
         payoff = np.maximum(k - bond_price_sim, 0)
         logger.debug("MC Zero Bond Put Payoff: %s", payoff)
 
-        # Present value = discounted expected payoff
+        # PV = discounted expected payoff
         return np.mean(df * payoff)
 
     def price_zero_bond_put_analytical(self, option_expiry: float, bond_maturity: float, k: float) -> float:
@@ -80,18 +86,18 @@ class hwPricer:
         return k * bond_price_expiry * norm.cdf(-h + vol_bond) - bond_price_maturity * norm.cdf(-h)
 
     def zero_bond_put(self, option_expiry: float, bond_maturity: float, k: float, mc: bool = False) -> float:
-        # Top-level zero-coupon bond put pricer (MC or analytical)
+        # Zero-coupon bond put pricer (MC or analytical)
         self.validate_times(option_expiry, bond_maturity)
         self.validate_positive(k, "strike")
         # Immediate exercise at t=0 (no optionality)
         if option_expiry == 0.0:
             bond_price = self.model.discount(bond_maturity)
             return max(k - bond_price, 0.0)
-        # Monte Carlo route btw
+        # Monte Carlo route
         if mc:  
             return self.price_zero_bond_put_mc(option_expiry, bond_maturity, k)
 
-        # Analytical closed-form route btw
+        # Analytical closed-form route 
         return self.price_zero_bond_put_analytical(option_expiry, bond_maturity, k)
 
     def price_zero_bond_call_mc(self, option_expiry: float, bond_maturity: float, k: float) -> float:
@@ -123,7 +129,7 @@ class hwPricer:
         return float(bond_price_maturity * norm.cdf(h) - k * bond_price_expiry * norm.cdf(h - vol_bond))
 
     def zero_bond_call(self, option_expiry: float, bond_maturity: float, k: float, mc: bool = False) -> float:
-        # Top-level zero-coupon bond call pricer
+        # Zero-coupon bond call pricer
         self.validate_times(option_expiry, bond_maturity)
         self.validate_positive(k, "strike")
 
@@ -176,15 +182,13 @@ class hwPricer:
     def caplet_pv(self, fixing_time: float, payment_time: float, k: float, mc: bool) -> float:
         # PV of a unit-notional caplet
         accrual_period = payment_time - fixing_time
-        if mc:
-            # MC valuation using forward rate simulation
+        if mc: # MC valuation using forward rate simulation
             fwd_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
             payoff = accrual_period * np.maximum(fwd_rate - k, 0.0)
             disc_payment = self.model.discount(payment_time)
 
             return disc_payment * np.mean(payoff)
-        else:
-            # Jamshidian decomposition via bond put
+        else: # Jamshidian decomposition via bond put
             k_bond = 1.0 + k * accrual_period
             put_price = self.zero_bond_put(fixing_time, payment_time, 1.0 / k_bond, mc=False)
 
@@ -208,8 +212,7 @@ class hwPricer:
         self.validate_positive(k, "strike")
 
         floor_value = 0.0
-        if mc:
-            # MC valuation by simulating forward rates
+        if mc: # MC valuation by simulating forward rates
             for i in range(1, len(payment_schedule)):
                 fixing_time = payment_schedule[i - 1]
                 payment_time = payment_schedule[i]
@@ -248,8 +251,7 @@ class hwPricer:
         fixed_leg_pv = annuity * fixed_rate
         floating_leg_pv = 0.0
 
-        if mc:
-            # MC valuation of floating leg via simulated forward rates
+        if mc: # MC valuation of floating leg via simulated forward rates
             for i in range(1, len(payment_schedule)):
                 fixing_time = payment_schedule[i - 1]
                 payment_time = payment_schedule[i]
@@ -257,8 +259,7 @@ class hwPricer:
                 disc_payment = self.model.discount(payment_time)
                 fwd_rate = self.curve_sim.fwd_rate(fixing_time, fixing_time, payment_time, fwd_measure=True)
                 floating_leg_pv += disc_payment * accrual_period * np.mean(fwd_rate)
-        else:
-            # Analytical floating leg PV using bond parity (aka using P(0,T0) - P(0,Tn))
+        else: # Analytical floating leg PV using bond parity (aka using P(0,T0) - P(0,Tn))
             floating_leg_pv = self.model.discount(payment_schedule[0]) - self.model.discount(payment_schedule[-1])
         # Swap value from perspective of payer/receiver
         swap_value = notional * direction * (floating_leg_pv - fixed_leg_pv)
@@ -291,22 +292,20 @@ class hwPricer:
     def find_rstar(self, option_expiry: float, payment_schedule: np.ndarray, fixed_rate: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
         # Solve for Jamshidian critical rate for a swaption
         root_func = lambda rate: self.jams_root(option_expiry, payment_schedule, fixed_rate, rate)
-
         # Evaluate function at initial bounds
         f_lower = root_func(lower_bound)
         f_upper = root_func(upper_bound)
-
         # If root not bracketed, widens the search interval
         if f_lower * f_upper > 0:
             lower_bound, upper_bound = -10.0, 10.0
             f_lower = root_func(lower_bound)
             f_upper = root_func(upper_bound)
             if f_lower * f_upper > 0:
-                # Fail fast if still no sign change
+                # Fails if theres still no sign change
                 raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check fixed rate={fixed_rate}.")
 
         return brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
-#START HERE
+
     def swaption(self, payment_schedule: np.ndarray, notional: float, fixed_rate: float, payer: bool = True, mc: bool = False) -> float:
         # Price a European swaption on a vanilla swap
         self.validate_positive(notional, "notional")
@@ -317,8 +316,7 @@ class hwPricer:
         option_expiry = payment_schedule[0]
         swap_maturity = payment_schedule[-1]
 
-        if mc:
-            # MC valuation using distribution of short rate at option expiry
+        if mc: # MC valuation using distribution of short rate at option expiry
             short_rate_expiry = self.curve_sim.sim.sim_short_rate_direct_fwd(option_expiry)
             bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
             bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
@@ -341,8 +339,7 @@ class hwPricer:
             disc_expiry = self.model.discount(option_expiry)
             swaption_value = disc_expiry * notional * np.mean(np.maximum(direction * (floating_leg_value - fixed_leg_value), 0))
 
-        else:
-            # Analytical Jamshidian decomposition for swaption
+        else: # Analytical Jamshidian decomposition for swaption
             critical_rate = self.find_rstar(option_expiry, payment_schedule, fixed_rate)
             fixed_leg_value = 0.0
             for i in range(1, len(payment_schedule)):
@@ -351,14 +348,12 @@ class hwPricer:
                 accrual_period = payment_time - fixing_time
                 bond_sens = self.model.rate_sens(option_expiry, payment_time)
                 bond_adj = self.model.bond_adj_factor(option_expiry, payment_time)
-                # Strike bond corresponding to r*
+                # Strike bond defined at the strike rate
                 strike_bond = bond_adj * np.exp(-bond_sens * critical_rate)
                 # Option on the bond: put for payer, call for receiver
-                option = (
-                    self.zero_bond_put(option_expiry, payment_time, strike_bond, mc=False)
+                option = (self.zero_bond_put(option_expiry, payment_time, strike_bond, mc=False)
                     if payer
-                    else self.zero_bond_call(option_expiry, payment_time, strike_bond, mc=False)
-                )
+                    else self.zero_bond_call(option_expiry, payment_time, strike_bond, mc=False))
                 # Contribution of each fixed cashflow to swaption value
                 fixed_leg_value += accrual_period * fixed_rate * option
 
@@ -366,11 +361,9 @@ class hwPricer:
             bond_sens_final = self.model.rate_sens(option_expiry, swap_maturity)
             bond_adj_final = self.model.bond_adj_factor(option_expiry, swap_maturity)
             strike_final = bond_adj_final * np.exp(-bond_sens_final * critical_rate)
-            floating_leg_value = (
-                self.zero_bond_put(option_expiry, swap_maturity, strike_final, mc=False)
+            floating_leg_value = (self.zero_bond_put(option_expiry, swap_maturity, strike_final, mc=False)
                 if payer
-                else self.zero_bond_call(option_expiry, swap_maturity, strike_final, mc=False)
-            )
+                else self.zero_bond_call(option_expiry, swap_maturity, strike_final, mc=False))
             swaption_value = notional * (floating_leg_value + fixed_leg_value)
 
         return swaption_value
@@ -402,7 +395,7 @@ class hwPricer:
         # Price a floating-rate note paying par at reset dates
         self.validate_positive(notional, "notional")
 
-        # Present value of floating coupons via swap with zero fixed rate
+        # PV of floating coupons via swap with zero fixed rate
         disced_coupons = self.swap(payment_schedule, notional, fixed_rate=0.0, payer=False, mc=False)
         # Discounted notional repayment at maturity
         disced_notional = notional * self.model.discount(payment_schedule[-1])
@@ -425,23 +418,22 @@ class hwPricer:
             # Corresponding coupon cashflow
             coupon_cashflow = notional * coupon_rate * accrual_period
             if i == len(payment_schedule) - 1:
-                # Add principal at maturity
+                # Adding principal at maturity
                 coupon_cashflow += notional
             bond_price += coupon_cashflow * bond_price_i
 
-        # Equation: model bond price(r*) - strike = 0
         return bond_price - strike_price
 
     def find_rstar_bond(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, notional: float,
                         strike_price: float, lower_bound: float = -5.0, upper_bound: float = 5.0) -> float:
-        # Solve for Jamshidian critical rate r* for coupon bond option
+        # Solve for Jamshidian critical rate for coupon bond option
         root_func = lambda rate: self.jams_root_bond(option_expiry, payment_schedule, coupon_rate, notional, strike_price, rate)
 
-        # Evaluate in initial interval
+        # Evaluating in initial interval
         f_lower = root_func(lower_bound)
         f_upper = root_func(upper_bound)
 
-        # Widen interval if necessary to bracket root
+        # Widening interval if necessary to bracket root
         if f_lower * f_upper > 0:
             lower_bound, upper_bound = -10.0, 10.0
             f_lower = root_func(lower_bound)
@@ -449,12 +441,12 @@ class hwPricer:
             if f_lower * f_upper > 0:
                 raise ValueError(f"Root not bracketed in [{lower_bound}, {upper_bound}]. Check strike_price={strike_price}.")
 
-        # Use Brent solver for robustness
+        # Using Brent solver for robustness
         return brentq(root_func, lower_bound, upper_bound, xtol=1e-12)
 
     def bond_option(self, option_expiry: float, payment_schedule: np.ndarray, coupon_rate: float, k: float,
                     notional: float, call: bool = True, mc: bool = False) -> float:
-        # Price a European option on a coupon-bearing bond
+        # Pricing a European option on a coupon-bearing bond
         self.validate_times(option_expiry, payment_schedule[-1])
         self.validate_positive(coupon_rate, "coupon_rate")
         self.validate_positive(k, "strike")
@@ -465,9 +457,7 @@ class hwPricer:
             bond_price_dist = self.curve_sim.coupon_bond(option_expiry, payment_schedule, coupon_rate, notional)
             disc_factor = self.model.discount(option_expiry)
             # Use call/put payoff on simulated bond prices
-            option_value = disc_factor * np.mean(
-                np.maximum(bond_price_dist - k, 0) if call else np.maximum(k - bond_price_dist, 0)
-            )
+            option_value = disc_factor * np.mean(np.maximum(bond_price_dist - k, 0) if call else np.maximum(k - bond_price_dist, 0))
         else:
             # Analytical Jamshidian decomposition for coupon bond option
             critical_rate = self.find_rstar_bond(option_expiry, payment_schedule, coupon_rate, notional, k)
@@ -479,25 +469,21 @@ class hwPricer:
                 accrual_period = curr_time - prev_time
                 bond_sens = self.model.rate_sens(option_expiry, curr_time)
                 bond_adj = self.model.bond_adj_factor(option_expiry, curr_time)
-                # Strike bond at each cashflow date for r*
+                # Striking bond at each cashflow date for strike rate
                 k_bond = bond_adj * np.exp(-bond_sens * critical_rate)
                 # Zero-coupon bond option for each coupon cashflow
-                option = (
-                    self.zero_bond_call(option_expiry, curr_time, k_bond, mc=False)
+                option = (self.zero_bond_call(option_expiry, curr_time, k_bond, mc=False)
                     if call
-                    else self.zero_bond_put(option_expiry, curr_time, k_bond, mc=False)
-                )
-                # Cashflow amount (coupon plus possible principal)
+                    else self.zero_bond_put(option_expiry, curr_time, k_bond, mc=False))
                 coupon_cashflow = notional * coupon_rate * accrual_period
                 if i == len(payment_schedule) - 1:
                     coupon_cashflow += notional
-                # Sum contribution of each cashflow
                 option_value += coupon_cashflow * option
 
         return option_value
 
 
 if __name__ == "__main__":
-    # Simple smoke test when running this module directly
+    # Simple test when running this module directly
     logging.basicConfig(level=logging.INFO)
     logger.info("hwPricer module is good")
