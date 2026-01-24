@@ -4,7 +4,7 @@
 
 # I tried putting comments to explain my thought process for everything in the code
 # If something is still fuzzy, there is a typo, or there is a better way to do something, please dm on linkedin!
-#https://www.linkedin.com/in/krupam-patel/
+# https://www.linkedin.com/in/krupam-patel/
 
 
 import logging
