@@ -20,7 +20,7 @@ def convert_rate_to_decimal(rate: Optional[float], percent_threshold: float = 0.
         return None
     return rate / 100.0 if rate > percent_threshold else rate
 
-class HullWhiteCalibrator:
+class hwCalibrator:
     def __init__(self, model, pricer, market_data_df, instrument_weights, calibrate_mean_reversion: bool = True, verbose: bool = True):
         # Initializes with model, pricer, market data DataFrame, and calibration options
         self.model = model
