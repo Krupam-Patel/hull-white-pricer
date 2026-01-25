@@ -1,21 +1,29 @@
+"""Hull–White calibration and Bachelier implied volatility utilities"""
+# Fully done 1-20-2026
+
+# I tried putting comments to explain my thought process for everything in the code
+# If something is still fuzzy, there is a typo, or there is a better way to do something, please dm on linkedin!
+# https://www.linkedin.com/in/krupam-patel/
+
 import logging
 from typing import Optional, Sequence, Tuple
-
-#Fully done 1-21-2026
-
 import numpy as np
 from scipy.optimize import differential_evolution, minimize, brentq
 from scipy.stats import norm
 
 logger = logging.getLogger(__name__)
 
+
 def rate_to_decimal(rate_input: Optional[float], percent_threshold: float = 0.5) -> Optional[float]:
+    # Converts rates given in percent to decimals
     if rate_input is None:
         return None
     return rate_input / 100.0 if rate_input > percent_threshold else rate_input
 
+
 class hwCalibrator:
     def __init__(self, model, pricer, mar_data_df, weights, mean_rever: bool = True, verbose: bool = True):
+        # Stores model, pricer, market data, and calibration settings
         self.model = model
         self.pricer = pricer
         self.mar_data_df = mar_data_df
@@ -25,10 +33,12 @@ class hwCalibrator:
         self.cali_hist: list[Tuple[np.ndarray, float]] = []
 
     def log(self, msg: str) -> None:
+        # Helper to log messages when verbose mode is on
         if self.verbose:
             logger.info(msg)
 
     def objective_error(self, params_vector: Sequence[float]) -> float:
+        # RMSE objective: match model prices to market across all instruments
         if self.mean_rever:
             mean_rever_param = float(params_vector[0])
             vol_param = float(params_vector[1])
@@ -54,13 +64,31 @@ class hwCalibrator:
             inst_type = str(row["InstrumentType"])
 
             if inst_type == "Caplet":
+                # Price a single caplet with the current model parameters
                 T1 = float(row["Expiry"])
                 T2 = float(row["Maturity"])
-                model_price = float(self.pricer.caplet(T1=T1, T2=T2, N=notional, K=strike, method="cf"))
+                model_price = float(
+                    self.pricer.caplet(
+                        T1=T1,
+                        T2=T2,
+                        N=notional,
+                        K=strike,
+                        method="cf",
+                    )
+                )
             elif inst_type == "Swap":
+                # Price a plain‑vanilla interest‑rate swap
                 dates = row["Dates"]
                 payer_flag = row.get("PayerFlag", True)
-                model_price = float(self.pricer.swap(Tau=dates, N=notional, K=strike, payer=payer_flag, mc=False))
+                model_price = float(
+                    self.pricer.swap(
+                        Tau=dates,
+                        N=notional,
+                        K=strike,
+                        payer=payer_flag,
+                        mc=False,
+                    )
+                )
             else:
                 raise ValueError(f"Unknown instrument type: {inst_type}")
 
@@ -73,7 +101,14 @@ class hwCalibrator:
 
         return rmse
 
-    def calibrate(self,use_global: bool = True,de_tol: float = 1e-4,de_maxiter: int = 200, lbfgs_options: Optional[dict] = None):
+    def calibrate(
+        self,
+        use_global: bool = True,
+        de_tol: float = 1e-4,
+        de_maxiter: int = 200,
+        lbfgs_options: Optional[dict] = None,
+    ):
+        # Run global (DE) or local (L‑BFGS‑B) optimization for model parameters
         if lbfgs_options is None:
             lbfgs_options = {"ftol": 1e-9, "gtol": 1e-6, "maxiter": 500}
 
@@ -81,16 +116,31 @@ class hwCalibrator:
         initial_sigma = 0.01
 
         if self.mean_rever:
+            # Bounds and initial guess when calibrating a and sigma
             bounds = [(1e-4, 1.0), (1e-5, 0.2)]
             x0 = np.array([curr_a, initial_sigma], dtype=float)
         else:
+            # Bounds and initial guess when calibrating sigma only
             bounds = [(1e-5, 0.2)]
             x0 = np.array([initial_sigma], dtype=float)
 
         if use_global:
-            result = differential_evolution(self.objective_error, bounds, strategy="best1bin", polish=True, tol=de_tol, maxiter=de_maxiter)
+            result = differential_evolution(
+                self.objective_error,
+                bounds,
+                strategy="best1bin",
+                polish=True,
+                tol=de_tol,
+                maxiter=de_maxiter,
+            )
         else:
-            result = minimize(self.objective_error, x0, method="L-BFGS-B", bounds=bounds, options=lbfgs_options)
+            result = minimize(
+                self.objective_error,
+                x0,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options=lbfgs_options,
+            )
 
         if result.success:
             opt_params = np.array(result.x, dtype=float)
@@ -125,8 +175,9 @@ def invert_bach_normal_vol(
     notional_size: float,
     percent_threshold: float = 0.5,
     max_expand: int = 10,
-    return_in_bps: bool = True) -> float:
-
+    return_in_bps: bool = True,
+) -> float:
+    # Invert Bachelier (normal) model to get implied vol from a cap/floor price
     frd_dec = rate_to_decimal(frd_rate, percent_threshold=percent_threshold)
     k_dec = rate_to_decimal(k_rate, percent_threshold=percent_threshold)
 
@@ -134,16 +185,21 @@ def invert_bach_normal_vol(
         raise ValueError("frd_rate and k_rate must be non-None")
 
     if time_to_expiry <= 0 or annuity_factor <= 0 or notional_size <= 0:
-        raise ValueError("time_to_expiry, annuity_factor, and notional_size must be positive")
+        raise ValueError(
+            "time_to_expiry, annuity_factor, and notional_size must be positive"
+        )
 
     target_price = float(mar_price_input)
 
     def bach_formula_price(normal_vol: float) -> float:
+        # Bachelier caplet/floorlet price for a given normal volatility
         if normal_vol <= 0:
             return np.nan
         sqrt_t = np.sqrt(time_to_expiry)
         d = (frd_dec - k_dec) / (normal_vol * sqrt_t)
-        price = (annuity_factor * notional_size * ((frd_dec - k_dec) * norm.cdf(d) + normal_vol * sqrt_t * norm.pdf(d)))
+        price = annuity_factor * notional_size * (
+            (frd_dec - k_dec) * norm.cdf(d) + normal_vol * sqrt_t * norm.pdf(d)
+        )
 
         return float(price)
 
@@ -154,6 +210,7 @@ def invert_bach_normal_vol(
         f_low = bach_formula_price(lower_vol) - target_price
         f_up = bach_formula_price(upper_vol) - target_price
 
+        # Try to bracket the root by expanding the upper bound if needed
         if np.isnan(f_low) or np.isnan(f_up):
             return float(np.nan)
 
@@ -172,6 +229,7 @@ def invert_bach_normal_vol(
             upper_vol,
         )
     except ValueError:
+        # Root not bracketed or other numerical issue
         return float(np.nan)
 
     if return_in_bps:
@@ -180,5 +238,6 @@ def invert_bach_normal_vol(
 
 
 if __name__ == "__main__":
+    # Minimal setup when running this module directly
     logging.basicConfig(level=logging.INFO)
     logger.info("Calibration module imported and ready.")
