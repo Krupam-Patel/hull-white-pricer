@@ -41,7 +41,7 @@ This repository provides a set of Python modules for building discount curves, i
 ## Sources I used to make this algorithm 
 
 - Perplexity / ChatGPT
-- A lottttt of Youtube (Especially the goat Nicholas Burgess (https://www.youtube.com/@AlgoQuantHub)
+- A lottttt of Youtube (Especially Nicholas Burgess (https://www.youtube.com/@AlgoQuantHub)
     - The absolute goat and really suggest you watch him 
 - https://www.tutorialspoint.com/scipy/scipy_interpolate_pchipinterpolator_function.htm
 - https://docs.python.org/3/howto/logging.html
